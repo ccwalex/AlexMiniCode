@@ -1,0 +1,73 @@
+python metadata
+
+MODULE_METADATA = {
+    "name": "function_or_class_name",
+    "type": "function",
+    "description": "What this module exports and does.",
+    "functions": [
+        {
+            "name": "function_name",
+            "inputs": {
+                "arg": "type / description"
+            },
+            "outputs": "type / description"
+        }
+    ]
+}
+
+
+typescript / Node
+
+MODULE_METADATA = {
+    "name": "module_or_export_name",
+    "type": "typescript_module",
+    "description": "What this TypeScript module exports and does.",
+    "exports": [
+        {
+            "name": "exportedFunction",
+            "kind": "function",
+            "inputs": {
+                "arg": "TypeScriptType"
+            },
+            "outputs": "TypeScriptReturnType"
+        }
+    ],
+    "imports": [
+        {
+            "from": "./somewhere",
+            "names": ["Something"]
+        }
+    ]
+}
+
+
+React
+
+MODULE_METADATA = {
+    "name": "InspectorPanel",
+    "type": "react_component",
+    "description": "Permanent right-side inspector panel.",
+    "component": {
+        "name": "InspectorPanel",
+        "props": {
+            "selectedProject": "Project | null",
+            "selectedSpaceId": "string | null",
+            "selectedTool": "Tool",
+            "onSelectSpace": "(spaceId: string) => void",
+            "onDeleteSpace": "(spaceId: string) => void"
+        },
+        "returns": "JSX.Element"
+    },
+    "exports": [
+        {
+            "name": "InspectorPanel",
+            "kind": "component"
+        }
+    ],
+    "imports": [
+        {
+            "from": "react",
+            "names": ["useMemo"]
+        }
+    ]
+}

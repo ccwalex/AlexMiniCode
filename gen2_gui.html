@@ -1,0 +1,735 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gen2 Agent</title>
+<style>
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui}
+.topbar{display:flex;align-items:center;gap:12px;padding:12px 12px 0}
+.topbar h1{margin:0;font-size:20px}
+.tabs{display:flex;gap:8px;margin-left:auto}
+.tab{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px 8px 0 0;padding:10px 16px;font-weight:700;cursor:pointer}
+.tab.active{background:var(--accent);color:#06111f;border-color:var(--accent)}
+.mode-panel{display:none;padding:12px}
+.mode-panel.active{display:block}
+.app{display:grid;grid-template-columns:35% 30% 35%;gap:12px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px}
+textarea,input,select{width:100%;box-sizing:border-box;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px;font-size:14px}
+.row,.two{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.row4{display:grid;grid-template-columns:1fr 1.2fr 0.8fr 0.8fr;gap:6px}
+.two{grid-template-columns:1fr 1fr}
+button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;border-radius:8px;padding:8px 10px;font-weight:700;cursor:pointer}
+.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--border)}
+.danger{background:var(--bad);color:#fff}
+.good{background:var(--good);color:#06111f}
+.box{border:1px solid var(--border);border-radius:8px;padding:8px;max-height:280px;overflow:auto;background:#111820}
+.item,.job{padding:6px;border-bottom:1px solid var(--border);font-size:12px}
+.dir{margin-left:12px}
+.muted,.small{color:var(--muted);font-size:12px}
+.logs{height:calc(100vh - 240px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
+.selected{background:var(--panel2)}
+.status-completed{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--accent)}.status-queued{color:#f4d03f}
+.disc-app{display:grid;grid-template-columns:320px 1fr;gap:12px;min-height:calc(100vh - 80px)}
+.chat-log{height:calc(100vh - 320px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-size:13px}
+.msg-user{color:#9fd0ff;margin:8px 0}.msg-assistant{color:#e8edf2;margin:8px 0}
+.msg-pending{color:var(--muted);margin:8px 0;display:flex;align-items:center;gap:8px}
+.spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:0 0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+button:disabled{opacity:.55;cursor:wait}
+.review-panel{margin-top:12px;padding:12px;border:1px solid var(--accent);border-radius:10px;background:#121820}
+.review-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.review-grid textarea{min-height:320px;font-family:monospace;font-size:12px}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:1000}
+.modal-backdrop.open{display:flex}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;max-width:720px;width:92%;max-height:80vh;overflow:auto}
+.modal.wide{max-width:1100px}
+.catalog-panel{margin-top:16px;border:1px solid var(--border);border-radius:10px;background:#111820;padding:10px}
+.catalog-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.catalog-head h3{margin:0;font-size:15px}
+.catalog-list{max-height:280px;overflow:auto}
+.catalog-item{border-bottom:1px solid var(--border);padding:8px 4px;font-size:12px}
+.catalog-item:last-child{border-bottom:0}
+.catalog-id{font-family:monospace;color:#9fd0ff}
+.catalog-chip{display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);font-family:monospace;font-size:11px}
+.config-table{width:100%;border-collapse:collapse;font-size:13px}
+.config-table th,.config-table td{border-bottom:1px solid var(--border);padding:8px 6px;vertical-align:middle}
+.config-table th{text-align:left;color:var(--muted);font-weight:600}
+.config-table select,.config-table input{font-size:13px}
+.config-summary{font-size:12px;color:var(--muted);margin:6px 0 10px}
+@media(max-width:1100px){.app,.disc-app,.review-grid{grid-template-columns:1fr}.logs,.chat-log{height:420px}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Gen2 Agent</h1>
+  <div class="tabs">
+    <button class="tab active" id="tabExecution" onclick="switchMode('execution')">Execution</button>
+    <button class="tab" id="tabDiscussion" onclick="switchMode('discussion')">Discussion</button>
+    <button class="secondary" onclick="openModelConfig()">Model Config</button>
+  </div>
+</div>
+
+<div id="executionMode" class="mode-panel active">
+<div class="app">
+<div class="panel">
+<button onclick="initAgent()">Init</button>
+<button onclick="refreshAllRegistries()">Refresh Registries</button>
+<pre id="systemStatus" class="box small"></pre>
+<h2>Prompt</h2>
+<textarea id="prompt" rows="9"></textarea>
+<div class="small">Main planner (per job). Defaults preset from Model Config → main planner.</div>
+<div class="row4">
+<div><label>Source</label><select id="jobSource" onchange="onJobSourceChange()"><option value="relay">relay server</option><option value="cursor">cursor CLI</option></select></div>
+<div><label>Model</label><select id="jobModel"></select></div>
+<div><label>Effort</label><select id="jobEffort"><option value="l" selected>low</option><option value="m">medium</option><option value="h">high</option></select></div>
+<div><label>Max tokens</label><input id="jobMaxTokens" type="number" value="16384"></div>
+</div>
+<label>Shell instructions</label>
+<textarea id="shellPrompt" rows="4">Allow creating and editing project files.
+Allow running Python scripts.
+Do not allow deleting files unless explicitly requested.
+Do not allow shell redirection for file writes.</textarea>
+<button onclick="submitJob()">Submit</button>
+<button class="secondary" onclick="refreshEverything()">Refresh</button>
+<h2>Git</h2>
+<button class="secondary" onclick="gitAction('status')">Status</button>
+<button class="secondary" onclick="gitAction('diff')">Diff</button>
+<button class="secondary" onclick="gitAction('log')">Log</button>
+<button class="secondary" onclick="gitAction('add_all')">Add All</button>
+<input id="commitMsg" placeholder="commit message">
+<button class="secondary" onclick="gitCommit()">Commit</button>
+<pre id="gitOutput" class="box small"></pre>
+</div>
+<div class="panel">
+<h2>Context</h2>
+<h3>Tracked Folders</h3>
+<div class="two"><input id="trackFolder" placeholder="folder path"><select id="trackType"><option value="py">py</option><option value="html">html</option><option value="react">react</option><option value="ts">ts</option></select></div>
+<button class="secondary" onclick="addTracked()">Add/Update</button>
+<button class="secondary" onclick="loadTracked()">Reload</button>
+<div id="tracked" class="box"></div>
+<h3>Registry Contexts</h3>
+<div id="registryContexts" class="box"></div>
+<h3>File Tree</h3>
+<button class="secondary" onclick="loadTree()">Reload Tree</button>
+<div class="small">selected files: <span id="fileCount">0</span>; registries: <span id="regCount">0</span></div>
+<div id="fileTree" class="box"></div>
+</div>
+<div class="panel">
+<h2>Jobs</h2>
+<button class="secondary" onclick="stopCurrentJob()">Stop Current</button>
+<button class="secondary" onclick="restartCurrentJob()">Restart Current</button>
+<button class="secondary" onclick="restartSelectedJob()">Restart Selected</button>
+<button class="secondary" onclick="stopAllJobs()">Stop All</button>
+<div id="jobs" class="box"></div>
+<h2 id="selectedTitle">No job selected</h2>
+<div id="selectedMeta" class="small"></div>
+<h3>Logs</h3>
+<div id="logs" class="logs">Select a job.</div>
+</div>
+</div>
+</div>
+
+<div id="discussionMode" class="mode-panel">
+<div class="disc-app">
+<div class="panel">
+<h2>Decisions</h2>
+<div class="small">Select conflict entries to inject into this discussion.</div>
+<button class="secondary" onclick="loadDiscussion()">Reload</button>
+<button class="secondary" onclick="resetDiscussion()">New Discussion</button>
+<div id="decisionList" class="box" style="max-height:calc(100vh - 180px)"></div>
+<div class="small">Phase: <span id="discPhase">chat</span></div>
+</div>
+<div class="panel">
+<h2>Discussion</h2>
+<div class="small">Multi-turn conversation to resolve selected conflicts by revising project.md and current_plan.md. Type <b>[END]</b> when ready to finalize file outputs.</div>
+<div id="chatLog" class="chat-log"></div>
+<div class="config-summary">Discussion LLM: <span id="discSettingsSummary">loading...</span> (configure via Model Config)</div>
+<textarea id="discInput" rows="4" placeholder="Discuss conflicts, ambiguities, or required plan changes..."></textarea>
+<button id="discSendBtn" onclick="sendDiscussion()">Send</button>
+<button id="discEndBtn" class="secondary" onclick="sendDiscussionEnd()">Send [END]</button>
+<div id="discBusy" class="small" style="display:none">Waiting for the discussion model…</div>
+<div id="reviewPanel" class="review-panel" style="display:none">
+<h3>Review proposed files</h3>
+<div class="small">Edit before saving. Save overwrites agent_memory/core/project.md and agent_memory/planning/current_plan.md.</div>
+<div class="review-grid">
+<div><label>project.md</label><textarea id="reviewProject"></textarea></div>
+<div><label>current_plan.md</label><textarea id="reviewPlan"></textarea></div>
+</div>
+<button class="good" onclick="saveDiscussionFiles()">Save files</button>
+<button class="danger" onclick="discardDiscussionFiles()">Discard changes</button>
+</div>
+</div>
+</div>
+</div>
+
+<div id="modelConfigModal" class="modal-backdrop">
+<div class="modal wide">
+<h2>Model Config</h2>
+<div class="small">Configure LLM source, model, effort, and max tokens for each agent role. Cursor model lists are fetched live and are not stored.</div>
+<div id="modelConfigStatus" class="small"></div>
+<table class="config-table">
+<thead><tr><th>Role</th><th>Source</th><th>Model</th><th>Effort</th><th>Max tokens</th></tr></thead>
+<tbody id="modelConfigRows"></tbody>
+</table>
+<div class="catalog-panel">
+  <div class="catalog-head">
+    <h3>Parse fallbacks</h3>
+  </div>
+  <div class="small">If an execution call (main planner or debug) returns no API list, or a verifier call returns no JSON decision, the same model is called once more. If that repeat still has no structured output, the request is routed to the model chosen here.</div>
+  <table class="config-table">
+    <thead><tr><th>Kind</th><th>Source</th><th>Model</th><th>Effort</th><th>Max tokens</th></tr></thead>
+    <tbody id="parseFallbackRows"></tbody>
+  </table>
+</div>
+<button class="good" onclick="saveModelConfig()">Save</button>
+<button class="secondary" onclick="closeModelConfig()">Close</button>
+<div class="catalog-panel">
+  <div class="catalog-head">
+    <h3>Cursor catalog</h3>
+    <button class="secondary" onclick="refreshCursorCatalog()">Refresh catalog</button>
+    <button class="secondary" onclick="copyCursorCatalog()">Copy JSON</button>
+  </div>
+  <div class="small">Live from Cursor.models.list(). Base ids, parameters, and preset variants are shown here and not stored. Use these values when editing fallback chains.</div>
+  <div id="cursorCatalogStatus" class="small">Open this dialog to fetch the catalog.</div>
+  <div id="cursorCatalog" class="catalog-list"></div>
+</div>
+</div>
+</div>
+
+<div id="resolveModal" class="modal-backdrop">
+<div class="modal">
+<h2>Mark resolved issues</h2>
+<div class="small">Select which injected decision entries are resolved. Checked entries will be removed from decision.json.</div>
+<div id="resolveList" class="box" style="max-height:360px"></div>
+<button class="good" onclick="confirmResolved()">Remove resolved from decision.json</button>
+<button class="secondary" onclick="closeResolveModal()">Skip</button>
+</div>
+</div>
+
+<script>
+let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set();
+let selectedDecisions=new Set(), discussionSession=null, injectedEntries=[], discussionBusy=false;
+let modelConfigState=null, modelOptionsCache={}, cursorCatalogCache=null;
+
+async function api(p,o={}){const clean=String(p).replace(/^\/+/, '');const r=await fetch(clean,o);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(e){d={error:t}}if(!r.ok)throw new Error(d.error||r.statusText);return d}
+function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+
+function effortLabel(v){
+  return ({l:'low',m:'medium',h:'high',low:'low',medium:'medium',high:'high'})[v]||v;
+}
+
+function formatRoleSummary(entry){
+  if(!entry) return 'not configured';
+  const modelLabel=entry.model_label||entry.model||'?';
+  return `${entry.source||'relay'} / ${modelLabel} / ${effortLabel(entry.effort||'m')} / ${entry.max_tokens||'?'}`;
+}
+
+function paramsEqual(a,b){
+  const left=JSON.stringify(a||[]);
+  const right=JSON.stringify(b||[]);
+  return left===right;
+}
+
+function encodeModelOption(model){
+  return JSON.stringify({id:model.id,params:model.params||[]});
+}
+
+function decodeModelOption(value){
+  try{
+    const parsed=JSON.parse(value);
+    if(parsed && parsed.id) return {id:parsed.id,params:parsed.params||[]};
+  }catch(e){}
+  return {id:String(value||''),params:[]};
+}
+
+function findMatchingModelOption(models, selectedId, selectedParams){
+  const params=selectedParams||[];
+  const exact=(models||[]).find(m=>m.id===selectedId && paramsEqual(m.params||[], params));
+  if(exact) return encodeModelOption(exact);
+  const byId=(models||[]).find(m=>m.id===selectedId);
+  if(byId) return encodeModelOption(byId);
+  return encodeModelOption({id:selectedId||'',params});
+}
+
+async function populateJobModelSelect(source, selected, selectedParams){
+  const sel=document.getElementById('jobModel');
+  if(!sel) return;
+  sel.innerHTML='<option>loading...</option>';
+  try{
+    const models=await fetchModelsForSource(source, true);
+    const selectedValue=findMatchingModelOption(models, selected, selectedParams);
+    sel.innerHTML=renderModelOptions(models, selectedValue);
+    if(selected && ![...sel.options].some(o=>o.value===selectedValue)){
+      sel.insertAdjacentHTML('afterbegin', `<option value="${esc(selectedValue)}" selected>${esc(selected)} (saved)</option>`);
+    }
+  }catch(e){
+    sel.innerHTML=`<option value="${esc(encodeModelOption({id:selected||'',params:selectedParams||[]}))}" selected>${esc(selected||'error')}</option>`;
+  }
+}
+
+async function applyJobPlannerDefaults(entry){
+  entry=entry||modelConfigState?.config?.roles?.main_planner||modelConfigState?.summary?.main_planner||{};
+  jobSource.value=entry.source||'relay';
+  jobEffort.value=entry.effort||'l';
+  jobMaxTokens.value=entry.max_tokens||16384;
+  await populateJobModelSelect(jobSource.value, entry.model||'mini', entry.cursor_params||[]);
+}
+
+async function onJobSourceChange(){
+  await populateJobModelSelect(jobSource.value, '');
+}
+
+async function loadModelConfigSummary(){
+  try{
+    const d=await api('/api/model_config');
+    modelConfigState=d;
+    applyModelSummaries(d.summary||{});
+    await applyJobPlannerDefaults(d.config?.roles?.main_planner||d.summary?.main_planner);
+  }catch(e){
+    discSettingsSummary.textContent='failed to load';
+  }
+}
+
+async function fetchModelsForSource(source, forceRefresh=false){
+  const key=String(source||'relay');
+  if(!forceRefresh && modelOptionsCache[key]) return modelOptionsCache[key];
+  const d=await api('/api/model_config/models?source='+encodeURIComponent(key));
+  if(!d.success) throw new Error(d.error||('failed to load models for '+key));
+  modelOptionsCache[key]=d.models||[];
+  if(key==='cursor'){
+    cursorCatalogCache=d;
+    renderCursorCatalog(d);
+  }
+  return modelOptionsCache[key];
+}
+
+function formatParamValues(param){
+  return (param.values||[]).map(v=>{
+    const value=v.value??'';
+    const label=v.label||value;
+    return label && label!==value ? `${value} (${label})` : String(value);
+  }).join(', ') || '(no values)';
+}
+
+function formatVariantParams(params){
+  return (params||[]).map(p=>`${p.id}=${p.value}`).join(', ') || '(no params)';
+}
+
+function renderCursorCatalog(payload){
+  const status=document.getElementById('cursorCatalogStatus');
+  const box=document.getElementById('cursorCatalog');
+  if(!status || !box) return;
+  if(!payload){
+    status.textContent='Catalog not loaded.';
+    box.innerHTML='';
+    return;
+  }
+  if(!payload.success){
+    status.textContent='Failed to load Cursor catalog: '+(payload.error||'unknown error');
+    box.innerHTML='';
+    return;
+  }
+  const catalog=payload.catalog||[];
+  status.textContent=catalog.length
+    ? `${catalog.length} base model${catalog.length===1?'':'s'} from live Cursor catalog.`
+    : 'Cursor catalog loaded, but no models were returned.';
+  box.innerHTML=catalog.map(model=>{
+    const params=(model.parameters||[]).map(p=>
+      `<span class="catalog-chip">${esc(p.id||'?')}: ${esc(formatParamValues(p))}</span>`
+    ).join('') || '<span class="muted">no parameters</span>';
+    const variants=(model.variants||[]).map(v=>
+      `<span class="catalog-chip">${esc(v.label||'variant')} → ${esc(formatVariantParams(v.params))}</span>`
+    ).join('') || '<span class="muted">no preset variants</span>';
+    return `<div class="catalog-item">
+      <div><span class="catalog-id">${esc(model.id)}</span> <span class="muted">${esc(model.label||'')}</span></div>
+      <div class="small" style="margin-top:4px"><b>parameters</b><br>${params}</div>
+      <div class="small" style="margin-top:4px"><b>variants</b><br>${variants}</div>
+    </div>`;
+  }).join('') || '<div class="muted">No catalog entries.</div>';
+}
+
+async function refreshCursorCatalog(){
+  const status=document.getElementById('cursorCatalogStatus');
+  if(status) status.textContent='Refreshing live Cursor catalog...';
+  try{
+    delete modelOptionsCache.cursor;
+    await fetchModelsForSource('cursor', true);
+  }catch(e){
+    cursorCatalogCache={success:false,error:e.message};
+    renderCursorCatalog(cursorCatalogCache);
+  }
+}
+
+async function copyCursorCatalog(){
+  const payload=cursorCatalogCache||{error:'catalog not loaded'};
+  const text=JSON.stringify(payload.catalog||payload,null,2);
+  try{
+    await navigator.clipboard.writeText(text);
+    document.getElementById('cursorCatalogStatus').textContent='Copied catalog JSON to clipboard.';
+  }catch(e){
+    document.getElementById('cursorCatalogStatus').textContent='Copy failed: '+e.message;
+  }
+}
+
+function applyModelSummaries(summary){
+  const s=summary||{};
+  discSettingsSummary.textContent=formatRoleSummary(s.discussion);
+}
+
+function renderModelOptions(models, selectedValue){
+  const opts=(models||[]).map(m=>{
+    const value=encodeModelOption(m);
+    const label=m.label||m.id;
+    return `<option value="${esc(value)}" ${value===selectedValue?'selected':''}>${esc(label)}</option>`;
+  }).join('');
+  if(!opts){
+    const fallback=selectedValue||encodeModelOption({id:'',params:[]});
+    return `<option value="${esc(fallback)}">${esc('(none)')}</option>`;
+  }
+  return opts;
+}
+
+async function renderModelConfigRows(){
+  const cfg=modelConfigState?.config?.roles||{};
+  const roles=modelConfigState?.roles||[];
+  modelConfigRows.innerHTML=roles.map(r=>{
+    const entry=cfg[r.id]||{};
+    return `<tr data-role="${esc(r.id)}">
+      <td><b>${esc(r.label||r.id)}</b></td>
+      <td><select class="cfg-source" onchange="onModelConfigSourceChange('${esc(r.id)}')">
+        <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+        <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
+      </select></td>
+      <td><select class="cfg-model" id="cfgModel_${esc(r.id)}"></select></td>
+      <td><select class="cfg-effort">
+        <option value="l" ${entry.effort==='l'?'selected':''}>low</option>
+        <option value="m" ${entry.effort==='m'?'selected':''}>medium</option>
+        <option value="h" ${entry.effort==='h'?'selected':''}>high</option>
+      </select></td>
+      <td><input class="cfg-max" type="number" value="${esc(entry.max_tokens||16384)}"></td>
+    </tr>`;
+  }).join('');
+  for(const r of roles){
+    await populateModelSelect(r.id, cfg[r.id]?.source||'relay', cfg[r.id]?.model||'', cfg[r.id]?.cursor_params||[]);
+  }
+  await renderParseFallbackRows();
+}
+
+async function renderParseFallbackRows(){
+  const cfg=modelConfigState?.config?.parse_fallbacks||{};
+  const kinds=modelConfigState?.parse_fallback_kinds||[
+    {id:'execution',label:'Execution (planner + debug)'},
+    {id:'verifier',label:'Verifier'}
+  ];
+  parseFallbackRows.innerHTML=kinds.map(k=>{
+    const entry=cfg[k.id]||{};
+    return `<tr data-kind="${esc(k.id)}">
+      <td><b>${esc(k.label||k.id)}</b></td>
+      <td><select class="cfg-source" onchange="onParseFallbackSourceChange('${esc(k.id)}')">
+        <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+        <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
+      </select></td>
+      <td><select class="cfg-model" id="cfgModel_parse_${esc(k.id)}"></select></td>
+      <td><select class="cfg-effort">
+        <option value="l" ${entry.effort==='l'?'selected':''}>low</option>
+        <option value="m" ${entry.effort==='m'?'selected':''}>medium</option>
+        <option value="h" ${entry.effort==='h'?'selected':''}>high</option>
+      </select></td>
+      <td><input class="cfg-max" type="number" value="${esc(entry.max_tokens||16384)}"></td>
+    </tr>`;
+  }).join('');
+  for(const k of kinds){
+    await populateModelSelect('parse_'+k.id, cfg[k.id]?.source||'relay', cfg[k.id]?.model||'', cfg[k.id]?.cursor_params||[]);
+  }
+}
+
+async function populateModelSelect(roleId, source, selected, selectedParams){
+  const sel=document.getElementById('cfgModel_'+roleId);
+  if(!sel) return;
+  sel.innerHTML='<option>loading live model list...</option>';
+  try{
+    const models=await fetchModelsForSource(source, true);
+    const selectedValue=findMatchingModelOption(models, selected, selectedParams);
+    sel.innerHTML=renderModelOptions(models, selectedValue);
+    if(selected && ![...sel.options].some(o=>o.value===selectedValue)){
+      sel.insertAdjacentHTML('afterbegin', `<option value="${esc(selectedValue)}" selected>${esc(selected)} (saved)</option>`);
+    }
+  }catch(e){
+    const fallback=encodeModelOption({id:selected||'',params:selectedParams||[]});
+    sel.innerHTML=`<option value="${esc(fallback)}" selected>${esc(selected||'failed to load models')}</option>`;
+  }
+}
+
+async function onModelConfigSourceChange(roleId){
+  modelOptionsCache={};
+  const row=modelConfigRows.querySelector(`tr[data-role="${roleId}"]`);
+  if(!row) return;
+  const source=row.querySelector('.cfg-source').value;
+  await populateModelSelect(roleId, source, '');
+}
+
+async function onParseFallbackSourceChange(kindId){
+  modelOptionsCache={};
+  const row=parseFallbackRows.querySelector(`tr[data-kind="${kindId}"]`);
+  if(!row) return;
+  const source=row.querySelector('.cfg-source').value;
+  await populateModelSelect('parse_'+kindId, source, '');
+}
+
+function readModelSelection(selectEl){
+  const decoded=decodeModelOption(selectEl?.value||'');
+  const out={model:decoded.id};
+  if(decoded.params && decoded.params.length) out.cursor_params=decoded.params;
+  return out;
+}
+
+function collectModelConfigFromUI(){
+  const roles={};
+  modelConfigRows.querySelectorAll('tr[data-role]').forEach(row=>{
+    const role=row.dataset.role;
+    const source=row.querySelector('.cfg-source').value;
+    const modelSel=readModelSelection(row.querySelector('.cfg-model'));
+    const entry={
+      source,
+      model:modelSel.model,
+      effort:row.querySelector('.cfg-effort').value,
+      max_tokens:parseInt(row.querySelector('.cfg-max').value||'16384',10)
+    };
+    if(source==='cursor' && modelSel.cursor_params) entry.cursor_params=modelSel.cursor_params;
+    roles[role]=entry;
+  });
+  const parse_fallbacks={};
+  parseFallbackRows.querySelectorAll('tr[data-kind]').forEach(row=>{
+    const kind=row.dataset.kind;
+    const source=row.querySelector('.cfg-source').value;
+    const modelSel=readModelSelection(row.querySelector('.cfg-model'));
+    const entry={
+      source,
+      model:modelSel.model,
+      effort:row.querySelector('.cfg-effort').value,
+      max_tokens:parseInt(row.querySelector('.cfg-max').value||'16384',10)
+    };
+    if(source==='cursor' && modelSel.cursor_params) entry.cursor_params=modelSel.cursor_params;
+    parse_fallbacks[kind]=entry;
+  });
+  return {roles, parse_fallbacks};
+}
+
+async function openModelConfig(){
+  modelConfigStatus.textContent='Loading...';
+  modelOptionsCache={};
+  cursorCatalogCache=null;
+  renderCursorCatalog(null);
+  modelConfigModal.classList.add('open');
+  try{
+    modelConfigState=await api('/api/model_config');
+    await renderModelConfigRows();
+    await refreshCursorCatalog();
+    modelConfigStatus.textContent='Cursor model lists are fetched live from Cursor.models.list() when this dialog opens. Preset variants such as Fast are separate selectable entries.';
+  }catch(e){
+    modelConfigStatus.textContent='Failed to load model config: '+e.message;
+  }
+}
+
+function closeModelConfig(){
+  modelConfigModal.classList.remove('open');
+}
+
+async function saveModelConfig(){
+  try{
+    const config=collectModelConfigFromUI();
+    const d=await api('/api/model_config/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config})});
+    modelConfigState=await api('/api/model_config');
+    applyModelSummaries(modelConfigState.summary||{});
+    await applyJobPlannerDefaults(modelConfigState.config?.roles?.main_planner);
+    modelConfigStatus.textContent='Saved.';
+  }catch(e){
+    modelConfigStatus.textContent='Save failed: '+e.message;
+  }
+}
+
+function switchMode(mode){
+  executionMode.classList.toggle('active', mode==='execution');
+  discussionMode.classList.toggle('active', mode==='discussion');
+  tabExecution.classList.toggle('active', mode==='execution');
+  tabDiscussion.classList.toggle('active', mode==='discussion');
+  if(mode==='discussion') loadDiscussion();
+}
+
+function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=selectedGroups.size}
+
+async function initAgent(){systemStatus.textContent=JSON.stringify(await api('/api/init',{method:'POST'}),null,2);await refreshEverything()}
+async function refreshAllRegistries(){systemStatus.textContent=JSON.stringify(await api('/api/refresh_all_registries',{method:'POST'}),null,2);await loadRegistryContexts()}
+async function stopCurrentJob(){if(!confirm('Stop the current running job?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_current_job',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop current failed:\n'+e.stack}}
+async function restartCurrentJob(){if(!confirm('Stop and restart the current running job?'))return;try{const d=await api('/api/restart_current_job',{method:'POST'});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart current failed:\n'+e.stack}}
+async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.');return}if(!confirm('Restart selected job as a new job?'))return;try{const d=await api('/api/restart_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:selectedJob})});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart selected failed:\n'+e.stack}}
+async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
+async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups]};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
+async function refreshEverything(){try{await api('/api/tick',{method:'POST'})}catch(e){}await loadJobs();if(selectedJob)await loadJob(selectedJob)}
+async function loadJobs(){const arr=await api('/api/jobs');jobs.innerHTML=arr.map(j=>`<div class="job ${j.job_id===selectedJob?'selected':''}" onclick="selectJob('${esc(j.job_id)}')"><b>${esc(j.job_id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`).join('')||'<div class="job">No jobs.</div>'}
+async function selectJob(id){selectedJob=id;await loadJobs();await loadJob(id)}
+async function loadJob(id){const d=await api('/api/job/'+encodeURIComponent(id));const l=await api('/api/job/'+encodeURIComponent(id)+'/logs');const s=d.status||{};selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';selectedMeta.textContent=s.reason||'';logs.textContent='=== STDOUT ===\n'+(l.stdout||'')+'\n\n=== STDERR ===\n'+(l.stderr||'')}
+async function loadTracked(){const d=await api('/api/tracked_folders');tracked.innerHTML=(d.folders||[]).map(f=>`<div class="item"><b>${esc(f.folder_path)}</b> [${esc(f.code_type)}]<div class="muted">${esc(f.metadata_path)}</div><button class="secondary" onclick="removeTracked('${esc(f.folder_path)}')">remove</button></div>`).join('')||'<div class="muted">No tracked folders.</div>';await loadRegistryContexts()}
+async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}
+async function removeTracked(p){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:p})}),null,2);await loadTracked()}
+async function loadRegistryContexts(){const arr=await api('/api/registry_contexts');registryContexts.innerHTML=arr.map(r=>`<label class="item"><input type="checkbox" ${selectedGroups.has(r.folder_path)?'checked':''} onchange="this.checked?selectedGroups.add('${esc(r.folder_path)}'):selectedGroups.delete('${esc(r.folder_path)}');counts()"> <b>${esc(r.folder_path)}</b> [${esc(r.code_type)}]<div class="muted">${esc(r.metadata_path)} | files: ${r.file_count}</div></label>`).join('')||'<div class="muted">No registry contexts. Add tracked folders then refresh.</div>';counts()}
+function renderNode(n){if(n.type==='file'){return `<label class="item"><input type="checkbox" ${selectedFiles.has(n.path)?'checked':''} onchange="this.checked?selectedFiles.add('${esc(n.path)}'):selectedFiles.delete('${esc(n.path)}');counts()"> ${esc(n.path)} <span class="muted">${n.size}</span></label>`}return `<details class="dir" ${n.path==='.'?'open':''}><summary>${esc(n.name)}</summary>${(n.children||[]).map(renderNode).join('')}</details>`}
+async function loadTree(){fileTree.innerHTML=renderNode(await api('/api/file_tree'));counts()}
+async function gitAction(action){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}),null,2)}
+async function gitCommit(){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'commit',message:commitMsg.value})}),null,2)}
+
+function renderChat(messages, pending=false){
+  const parts=(messages||[]).map(m=>{
+    const cls=m.role==='user'?'msg-user':'msg-assistant';
+    const label=m.role==='user'?'You':'Assistant';
+    return `<div class="${cls}"><b>${label}</b>\n${esc(m.content||'')}</div>`;
+  });
+  if(pending){
+    parts.push('<div class="msg-pending"><span class="spinner"></span><span>Assistant is thinking… this can take a while.</span></div>');
+  }
+  chatLog.innerHTML=parts.join('')||(pending?'':'<div class="muted">No messages yet.</div>');
+  chatLog.scrollTop=chatLog.scrollHeight;
+}
+
+function setDiscussionBusy(busy){
+  discussionBusy=!!busy;
+  discSendBtn.disabled=discussionBusy;
+  discEndBtn.disabled=discussionBusy;
+  discInput.disabled=discussionBusy;
+  discBusy.style.display=discussionBusy?'block':'none';
+}
+
+function syncDecisionChecks(){
+  decisionList.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    const idx=parseInt(cb.dataset.index,10);
+    cb.checked=selectedDecisions.has(idx);
+  });
+}
+
+function renderDecisionList(decisions){
+  decisionList.innerHTML=(decisions||[]).map(d=>`<label class="item"><input type="checkbox" data-index="${d.index}" ${selectedDecisions.has(d.index)?'checked':''} onchange="toggleDecision(${d.index}, this.checked)"> <b>#${d.index}</b> <span class="muted">${esc(d.date||'')}</span><div>${esc(d.conflict||'')}</div><div class="muted">${esc((d.task||'').slice(0,180))}</div></label>`).join('')||'<div class="muted">No entries in decision.json.</div>';
+}
+
+function toggleDecision(index, checked){
+  if(checked) selectedDecisions.add(index); else selectedDecisions.delete(index);
+}
+
+function applyDiscussionSettings(settings){
+  discSettingsSummary.textContent=formatRoleSummary(settings);
+}
+
+function updateDiscussionUI(ctx){
+  discussionSession=ctx.session||{};
+  injectedEntries=discussionSession.selected_entries||[];
+  applyDiscussionSettings(ctx.settings||ctx.defaults||{});
+  if(Array.isArray(discussionSession.selected_indices)){
+    selectedDecisions=new Set(discussionSession.selected_indices);
+  }
+  renderDecisionList(ctx.decisions||[]);
+  syncDecisionChecks();
+  renderChat(discussionSession.messages||[]);
+  discPhase.textContent=discussionSession.phase||'chat';
+  const inReview=discussionSession.phase==='review';
+  reviewPanel.style.display=inReview?'block':'none';
+  if(inReview){
+    reviewProject.value=discussionSession.pending_project||ctx.project||'';
+    reviewPlan.value=discussionSession.pending_plan||ctx.plan||'';
+  }
+}
+
+async function loadDiscussion(){
+  const ctx=await api('/api/discussion/context');
+  updateDiscussionUI(ctx);
+}
+
+async function resetDiscussion(){
+  if(!confirm('Start a new discussion? Current chat history will be cleared.')) return;
+  const d=await api('/api/discussion/reset',{method:'POST'});
+  selectedDecisions=new Set();
+  injectedEntries=[];
+  await loadDiscussion();
+}
+
+async function sendDiscussionMessage(text){
+  if(discussionBusy) return;
+  text=String(text||'').trim();
+  if(!text){alert('Message required');return}
+  if(selectedDecisions.size===0 && text!=='[END]'){
+    if(!confirm('No decision entries selected. Continue anyway?')) return;
+  }
+  const payload={
+    message:text,
+    selected_indices:[...selectedDecisions]
+  };
+  const pendingMessages=[...(discussionSession?.messages||[]), {role:'user', content:text}];
+  setDiscussionBusy(true);
+  renderChat(pendingMessages, true);
+  discInput.value='';
+  try{
+    const d=await api('/api/discussion/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!d.success){alert(d.error||'Discussion call failed');renderChat(discussionSession?.messages||[]);return}
+    discussionSession=d.session||{};
+    injectedEntries=discussionSession.selected_entries||injectedEntries;
+    updateDiscussionUI({
+      decisions:(await api('/api/discussion/context')).decisions,
+      session:discussionSession,
+      project:reviewProject.value,
+      plan:reviewPlan.value
+    });
+  }catch(e){
+    alert(e.message||'Discussion call failed');
+    renderChat(discussionSession?.messages||[]);
+  }finally{
+    setDiscussionBusy(false);
+  }
+}
+
+async function sendDiscussion(){await sendDiscussionMessage(discInput.value)}
+async function sendDiscussionEnd(){await sendDiscussionMessage('[END]')}
+
+async function saveDiscussionFiles(){
+  const payload={
+    project:reviewProject.value,
+    plan:reviewPlan.value
+  };
+  const d=await api('/api/discussion/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!d.success){alert(d.error||'Save failed');return}
+  openResolveModal();
+}
+
+async function discardDiscussionFiles(){
+  if(!confirm('Discard proposed file changes?')) return;
+  await api('/api/discussion/discard',{method:'POST'});
+  reviewPanel.style.display='none';
+  openResolveModal();
+}
+
+function openResolveModal(){
+  const entries=injectedEntries||[];
+  resolveList.innerHTML=entries.map((e,i)=>`<label class="item"><input type="checkbox" data-resolve-index="${i}" checked> <b>#${esc(e.index)}</b> <span class="muted">${esc(e.date||'')}</span><div>${esc(e.conflict||'')}</div></label>`).join('')||'<div class="muted">No injected decision entries for this session.</div>';
+  resolveModal.classList.add('open');
+}
+
+function closeResolveModal(){
+  resolveModal.classList.remove('open');
+  api('/api/discussion/skip_resolve',{method:'POST'}).finally(()=>loadDiscussion());
+}
+
+async function confirmResolved(){
+  const entries=[];
+  resolveList.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    if(!cb.checked) return;
+    const i=parseInt(cb.dataset.resolveIndex,10);
+    const e=(injectedEntries||[])[i];
+    if(e) entries.push({index:e.index,date:e.date,task:e.task,conflict:e.conflict});
+  });
+  await api('/api/discussion/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved_entries:entries})});
+  closeResolveModal();
+}
+
+setInterval(()=>{if(executionMode.classList.contains('active')) refreshEverything()},2000);
+refreshEverything();loadTracked();loadTree();loadModelConfigSummary();
+</script>
+</body>
+</html>
