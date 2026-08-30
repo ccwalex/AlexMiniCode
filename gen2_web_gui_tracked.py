@@ -4,14 +4,14 @@ import argparse, json, os, signal, subprocess, sys, time, uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 DEFAULT_MODEL='mini'; DEFAULT_EFFORT='l'; DEFAULT_MAX_TOKENS=16384
 DEFAULT_SHELL="""Allow creating and editing project files.
 Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes."""
 TERMINAL={'completed','failed','cancelled'}
-EXCLUDE_DIRS={'.git','__pycache__','.ipynb_checkpoints','node_modules','.venv','venv','env','.pytest_cache','.mypy_cache'}
+EXCLUDE_DIRS={'.git','__pycache__','.ipynb_checkpoints','node_modules','.venv','venv','env','.pytest_cache','.mypy_cache','.cursor'}
 EXCLUDE_SUFFIXES={'.pyc','.pyo','.png','.jpg','.jpeg','.gif','.webp','.ico','.pdf','.zip','.tar','.gz','.7z','.mp4','.mov','.avi','.sqlite','.db','.parquet','.npy','.npz','.pt','.pth'}
 def source_dir(): return Path(__file__).resolve().parent
 def project_root(): return source_dir().parent
@@ -257,31 +257,87 @@ def render_registry_context(groups):
     """Backward-compatible alias for render_module_registry."""
     return render_module_registry(groups)
 # file tree / injection
-def file_tree(max_files=1200):
-    root=project_root().resolve(); count=0
-    def build(dirp):
-        nonlocal count
-        children=[]
-        try: entries=sorted(dirp.iterdir(),key=lambda p:(not p.is_dir(),p.name.lower()))
-        except Exception: entries=[]
-        for p in entries:
-            if p.is_dir():
-                if p.name in EXCLUDE_DIRS: continue
-                r=relpath(p)
-                if r=='agent_memory/jobs' or r.startswith('agent_memory/jobs/'): continue
-                node=build(p)
-                if node['children']: children.append(node)
-            else:
-                if p.suffix.lower() in EXCLUDE_SUFFIXES: continue
-                r=relpath(p)
-                if r.startswith('agent_memory/jobs/'): continue
-                try: size=p.stat().st_size
-                except Exception: size=0
-                if size>2_000_000: continue
-                children.append({'type':'file','name':p.name,'path':r,'size':size}); count+=1
-                if count>=max_files: break
-        return {'type':'dir','name':dirp.name if dirp!=root else '.','path':relpath(dirp),'children':children}
-    return build(root)
+def _tree_scan_rel(dirp, scan_root):
+    try:
+        rel = dirp.resolve().relative_to(scan_root).as_posix()
+    except Exception:
+        return '.'
+    return '.' if rel == '.' else rel
+
+def _should_prune_tree_dir(scan_rel, include_agent_memory=False):
+    if not scan_rel or scan_rel == '.':
+        return False
+    if scan_rel == 'agent_memory/jobs' or scan_rel.startswith('agent_memory/jobs/'):
+        return True
+    if not include_agent_memory and (scan_rel == 'agent_memory' or scan_rel.startswith('agent_memory/')):
+        return True
+    return False
+
+def file_tree_scan_root():
+    """GUI file picker scans the agent package, not its parent folder."""
+    return source_dir().resolve()
+
+def file_tree(max_files=10000, include_agent_memory=False):
+    """Return a flat file list for the GUI picker.
+
+    Walks the agent package root with os.walk so files in each directory are
+    collected before descending into subdirectories. The old recursive builder
+    listed directories first, which could skip new files sitting in a folder
+    root once enough nested files were already counted.
+
+    agent_memory is excluded by default; pass include_agent_memory=True to scan it.
+    agent_memory/jobs is always excluded.
+    """
+    scan_root = file_tree_scan_root()
+    project = project_root().resolve()
+    files = []
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(scan_root, topdown=True, followlinks=False):
+        dirp = Path(dirpath)
+        scan_rel = _tree_scan_rel(dirp, scan_root)
+        if _should_prune_tree_dir(scan_rel, include_agent_memory=include_agent_memory):
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(
+            (d for d in dirnames if d not in EXCLUDE_DIRS),
+            key=str.lower,
+        )
+        for name in sorted(filenames, key=str.lower):
+            p = dirp / name
+            file_scan_rel = _tree_scan_rel(p, scan_root)
+            if _should_prune_tree_dir(file_scan_rel, include_agent_memory=include_agent_memory):
+                continue
+            if p.suffix.lower() in EXCLUDE_SUFFIXES:
+                continue
+            try:
+                rel = relpath(p)
+            except Exception:
+                continue
+            try:
+                size = p.stat().st_size
+            except Exception:
+                size = 0
+            try:
+                label = p.resolve().relative_to(scan_root).as_posix()
+            except Exception:
+                label = rel
+            files.append({'path': rel, 'label': label, 'size': size})
+            if len(files) >= max_files:
+                truncated = True
+                break
+        if truncated:
+            break
+    return {
+        'files': files,
+        'meta': {
+            'root': str(scan_root),
+            'project_root': str(project),
+            'shown': len(files),
+            'truncated': truncated,
+            'max_files': max_files,
+            'include_agent_memory': bool(include_agent_memory),
+        },
+    }
 def read_context_file(path, index, n=30000):
     """
     Render one file as prompt context.
@@ -971,7 +1027,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path=='/': return hresp(self,load_html())
             if path=='/api/jobs': return jresp(self,list_jobs())
-            if path=='/api/file_tree': return jresp(self,file_tree())
+            if path=='/api/file_tree':
+                params=parse_qs(urlparse(self.path).query)
+                include_memory=(params.get('include_agent_memory') or ['0'])[0].lower() in ('1','true','yes','on')
+                return jresp(self,file_tree(include_agent_memory=include_memory))
             if path=='/api/tracked_folders': return jresp(self,tracked_folders())
             if path=='/api/registry_contexts': return jresp(self,registry_contexts())
             if path=='/api/subagent/status': return jresp(self,subagent_status())
