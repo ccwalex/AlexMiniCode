@@ -690,6 +690,8 @@ async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/
 async function removeTracked(p){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:p})}),null,2);await loadTracked()}
 async function loadRegistryContexts(){const arr=await api('/api/registry_contexts');registryContexts.innerHTML=arr.map(r=>`<label class="item"><input type="checkbox" ${selectedGroups.has(r.folder_path)?'checked':''} onchange="this.checked?selectedGroups.add('${esc(r.folder_path)}'):selectedGroups.delete('${esc(r.folder_path)}');counts()"> <b>${esc(r.folder_path)}</b> [${esc(r.code_type)}]<div class="muted">${esc(r.metadata_path)} | files: ${r.file_count}</div></label>`).join('')||'<div class="muted">No registry contexts. Add tracked folders then refresh.</div>';counts()}
 let fileTreeData=null;
+let fileTreeLoadVersion=0;
+const expandedTreeDirs=new Set(['.']);
 function formatFileSize(n){
   const size=Number(n)||0;
   if(size<1024) return `${size} B`;
@@ -700,17 +702,79 @@ function fileTreeQuery(){
   const filterEl=document.getElementById('fileTreeFilter');
   return (filterEl&&filterEl.value||'').trim().toLowerCase();
 }
+function fileTreeFlags(){
+  return {
+    includeAgent:!!document.getElementById('includeAgent')?.checked,
+    includeMemory:!!document.getElementById('includeAgentMemory')?.checked
+  };
+}
+function fileTreeUrl(path){
+  const flags=fileTreeFlags();
+  const qs=new URLSearchParams({path:path||'.'});
+  if(flags.includeAgent) qs.set('include_agent','1');
+  if(flags.includeMemory) qs.set('include_agent_memory','1');
+  return '/api/file_tree?'+qs.toString();
+}
+function findTreeNode(node,path){
+  if(!node) return null;
+  if(node.path===path) return node;
+  for(const child of node.children||[]){
+    if(child.type==='dir'){
+      const found=findTreeNode(child,path);
+      if(found) return found;
+    }
+  }
+  return null;
+}
 function renderNode(n, q){
   if(!n) return '';
   if(n.type==='file'){
     const hay=((n.path||'')+' '+(n.name||'')).toLowerCase();
     if(q && !hay.includes(q)) return '';
-    return `<label class="item"><input type="checkbox" ${selectedFiles.has(n.path)?'checked':''} onchange="this.checked?selectedFiles.add('${esc(n.path)}'):selectedFiles.delete('${esc(n.path)}');counts()"> ${esc(n.path)} <span class="muted">${formatFileSize(n.size)}</span></label>`;
+    return `<label class="item"><input type="checkbox" data-file-path="${esc(n.path)}" ${selectedFiles.has(n.path)?'checked':''}> ${esc(n.name)} <span class="muted">${formatFileSize(n.size)}</span></label>`;
   }
   const kids=(n.children||[]).map(c=>renderNode(c,q)).join('');
   const selfMatch=((n.path||'')+' '+(n.name||'')).toLowerCase().includes(q);
-  if(q && !kids && !selfMatch) return '';
-  return `<details class="dir" ${n.path==='.' || q?'open':''}><summary>${esc(n.name)}</summary>${kids}</details>`;
+  if(q && n.loaded && !kids && !selfMatch) return '';
+  const open=expandedTreeDirs.has(n.path)||!!q;
+  const body=n.loading?'<div class="item muted">Loading...</div>':kids;
+  return `<details class="dir" data-dir-path="${esc(n.path)}" ${open?'open':''}><summary>${esc(n.name)}</summary>${body}</details>`;
+}
+function bindTreeEvents(){
+  fileTree.querySelectorAll('input[data-file-path]').forEach(cb=>{
+    cb.addEventListener('change',()=>{
+      const path=cb.dataset.filePath;
+      if(cb.checked) selectedFiles.add(path);
+      else selectedFiles.delete(path);
+      counts();
+    });
+  });
+  fileTree.querySelectorAll('details[data-dir-path]').forEach(details=>{
+    details.addEventListener('toggle',async()=>{
+      const path=details.dataset.dirPath;
+      if(!details.open){
+        expandedTreeDirs.delete(path);
+        return;
+      }
+      expandedTreeDirs.add(path);
+      const node=findTreeNode(fileTreeData,path);
+      if(!node || node.loaded || node.loading) return;
+      node.loading=true;
+      renderTree();
+      try{
+        const version=fileTreeLoadVersion;
+        const loaded=await api(fileTreeUrl(path));
+        if(version!==fileTreeLoadVersion) return;
+        Object.assign(node,loaded,{loading:false});
+      }catch(e){
+        node.loading=false;
+        node.loaded=true;
+        node.children=[];
+        node.loadError=e.message||String(e);
+      }
+      renderTree();
+    });
+  });
 }
 function renderTree(){
   if(!fileTreeData || fileTreeData.error){
@@ -720,18 +784,18 @@ function renderTree(){
   const q=fileTreeQuery();
   const html=renderNode(fileTreeData, q);
   fileTree.innerHTML=html||(q?'<div class="muted">No files match filter.</div>':'<div class="muted">No files found.</div>');
+  bindTreeEvents();
 }
 async function loadTree(){
   const metaEl=document.getElementById('fileTreeMeta');
-  const includeAgent=!!document.getElementById('includeAgent')?.checked;
-  const includeMemory=!!document.getElementById('includeAgentMemory')?.checked;
+  const version=++fileTreeLoadVersion;
+  expandedTreeDirs.clear();
+  expandedTreeDirs.add('.');
   try{
     fileTree.textContent='Loading...';
     if(metaEl) metaEl.textContent='';
-    const qs=[];
-    if(includeAgent) qs.push('include_agent=1');
-    if(includeMemory) qs.push('include_agent_memory=1');
-    const resp=await api('/api/file_tree'+(qs.length?'?'+qs.join('&'):''));
+    const resp=await api(fileTreeUrl('.'));
+    if(version!==fileTreeLoadVersion) return;
     if(!resp || resp.error){
       fileTree.textContent='Failed to load tree: '+(resp&&resp.error||'empty response');
       return;
@@ -739,11 +803,10 @@ async function loadTree(){
     fileTreeData=resp;
     const meta=resp.meta||{};
     if(metaEl){
-      const shown=meta.shown ?? 0;
       const parts=[];
       parts.push(meta.include_agent?'including agent/':'agent/ excluded');
       parts.push(meta.include_agent_memory?'including agent_memory':'agent_memory excluded');
-      metaEl.textContent=`${shown} files under ${meta.root||'project root'} (${parts.join(', ')})`;
+      metaEl.textContent=`${meta.listed??0} root entries under ${meta.root||'project root'}; folders load on expand (${parts.join(', ')})`;
     }
     renderTree();
   }catch(e){

@@ -261,67 +261,78 @@ def file_tree_scan_root():
     """GUI file picker scans the project folder that contains agent/."""
     return project_root().resolve()
 
-def file_tree(include_agent=False, include_agent_memory=False):
-    """Return a nested directory tree using the original recursive iterdir builder.
-
-    Root is one level above agent/. There is no file-count or size cap. agent/
-    and agent_memory are excluded by default; pass include_agent=True or
-    include_agent_memory=True to scan them. agent_memory/jobs is always excluded.
-    """
+def file_tree(path='.', include_agent=False, include_agent_memory=False):
+    """List one directory for the lazy GUI file picker."""
     root = file_tree_scan_root()
-    count = 0
+    dirp = resolve_project_path(path or '.')
+    if not dirp.is_dir():
+        raise ValueError(f'not a directory: {path}')
+    dir_rel = relpath(dirp)
+    if dir_rel == 'agent' or dir_rel.startswith('agent/'):
+        if not include_agent:
+            raise ValueError('agent/ is not enabled')
+    if dir_rel == 'agent_memory' or dir_rel.startswith('agent_memory/'):
+        if not include_agent_memory:
+            raise ValueError('agent_memory is not enabled')
+        if dir_rel == 'agent_memory/jobs' or dir_rel.startswith('agent_memory/jobs/'):
+            raise ValueError('agent_memory/jobs is excluded')
 
-    def build(dirp):
-        nonlocal count
-        children = []
+    children = []
+    try:
+        entries = sorted(os.scandir(dirp), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.is_dir():
+            if entry.name in EXCLUDE_DIRS:
+                continue
+            if dirp == root and entry.name == 'agent' and not include_agent:
+                continue
+            if entry.name == 'agent_memory' and not include_agent_memory:
+                continue
+            p = Path(entry.path)
+            try:
+                r = relpath(p)
+            except Exception:
+                continue
+            if r == 'agent_memory/jobs' or r.startswith('agent_memory/jobs/'):
+                continue
+            children.append({
+                'type': 'dir',
+                'name': entry.name,
+                'path': r,
+                'children': [],
+                'loaded': False,
+            })
+            continue
+        if not entry.is_file() or Path(entry.name).suffix.lower() in EXCLUDE_SUFFIXES:
+            continue
+        p = Path(entry.path)
         try:
-            entries = sorted(dirp.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            r = relpath(p)
         except Exception:
-            entries = []
-        for p in entries:
-            if p.is_dir():
-                if p.name in EXCLUDE_DIRS:
-                    continue
-                if dirp == root and p.name == 'agent' and not include_agent:
-                    continue
-                if p.name == 'agent_memory' and not include_agent_memory:
-                    continue
-                try:
-                    r = relpath(p)
-                except Exception:
-                    continue
-                if r == 'agent_memory/jobs' or r.startswith('agent_memory/jobs/') or r.endswith('/agent_memory/jobs') or '/agent_memory/jobs/' in r:
-                    continue
-                node = build(p)
-                if node['children']:
-                    children.append(node)
-            else:
-                if p.suffix.lower() in EXCLUDE_SUFFIXES:
-                    continue
-                try:
-                    r = relpath(p)
-                except Exception:
-                    continue
-                if 'agent_memory/jobs/' in r:
-                    continue
-                try:
-                    size = p.stat().st_size
-                except Exception:
-                    size = 0
-                children.append({'type': 'file', 'name': p.name, 'path': r, 'size': size})
-                count += 1
-        return {'type': 'dir', 'name': dirp.name if dirp != root else '.', 'path': relpath(dirp), 'children': children}
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError:
+            size = 0
+        children.append({'type': 'file', 'name': entry.name, 'path': r, 'size': size})
 
-    tree = build(root)
-    tree['meta'] = {
+    return {
+        'type': 'dir',
+        'name': dirp.name if dirp != root else '.',
+        'path': dir_rel,
+        'children': children,
+        'loaded': True,
+        'meta': {
         'root': str(root),
         'project_root': str(root),
-        'shown': count,
-        'truncated': False,
+        'shown': sum(1 for child in children if child['type'] == 'file'),
+        'listed': len(children),
         'include_agent': bool(include_agent),
         'include_agent_memory': bool(include_agent_memory),
+        },
     }
-    return tree
 def read_context_file(path, index, n=30000):
     """
     Render one file as prompt context.
@@ -1014,7 +1025,8 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/file_tree':
                 params=parse_qs(urlparse(self.path).query)
                 flag=lambda k:(params.get(k) or ['0'])[0].lower() in ('1','true','yes','on')
-                return jresp(self,file_tree(include_agent=flag('include_agent'), include_agent_memory=flag('include_agent_memory')))
+                tree_path=(params.get('path') or ['.'])[0]
+                return jresp(self,file_tree(path=tree_path, include_agent=flag('include_agent'), include_agent_memory=flag('include_agent_memory')))
             if path=='/api/tracked_folders': return jresp(self,tracked_folders())
             if path=='/api/registry_contexts': return jresp(self,registry_contexts())
             if path=='/api/subagent/status': return jresp(self,subagent_status())
