@@ -922,22 +922,25 @@ def model_config_list_models(source):
     from modules.list_llm_models import list_models_for_source
     return list_models_for_source(source)
 # http
+def _nocache_headers(h):
+    h.send_header('Cache-Control','no-store, no-cache, must-revalidate, max-age=0')
+    h.send_header('Pragma','no-cache')
+    h.send_header('Expires','0')
 def jresp(h,obj,status=200):
-    b=json.dumps(obj,ensure_ascii=False).encode(); h.send_response(status); h.send_header('Content-Type','application/json; charset=utf-8'); h.send_header('Content-Length',str(len(b))); h.end_headers(); h.wfile.write(b)
+    b=json.dumps(obj,ensure_ascii=False).encode(); h.send_response(status); h.send_header('Content-Type','application/json; charset=utf-8'); h.send_header('Content-Length',str(len(b))); _nocache_headers(h); h.end_headers(); h.wfile.write(b)
 def hresp(h,text,status=200):
-    b=text.encode(); h.send_response(status); h.send_header('Content-Type','text/html; charset=utf-8'); h.send_header('Content-Length',str(len(b))); h.end_headers(); h.wfile.write(b)
+    b=text.encode(); h.send_response(status); h.send_header('Content-Type','text/html; charset=utf-8'); h.send_header('Content-Length',str(len(b))); _nocache_headers(h); h.end_headers(); h.wfile.write(b)
 def reqjson(h):
     n=int(h.headers.get('Content-Length','0') or 0); return json.loads(h.rfile.read(n).decode()) if n>0 else {}
 def load_html():
     p=source_dir()/'gen2_gui.html'
     if p.exists(): return p.read_text(encoding='utf-8')
     return '<html><body><h1>Missing gen2_gui.html</h1></body></html>'
-HTML = load_html()
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=unquote(urlparse(self.path).path)
         try:
-            if path=='/': return hresp(self,HTML)
+            if path=='/': return hresp(self,load_html())
             if path=='/api/jobs': return jresp(self,list_jobs())
             if path=='/api/file_tree': return jresp(self,file_tree())
             if path=='/api/tracked_folders': return jresp(self,tracked_folders())

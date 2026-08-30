@@ -91,7 +91,7 @@ Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes.</textarea>
 <button onclick="submitJob()">Submit</button>
-<button class="secondary" onclick="refreshEverything()">Refresh</button>
+<button class="secondary" onclick="refreshContext()">Refresh</button>
 <h2>Git</h2>
 <button class="secondary" onclick="gitAction('status')">Status</button>
 <button class="secondary" onclick="gitAction('diff')">Diff</button>
@@ -212,7 +212,19 @@ let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set();
 let selectedDecisions=new Set(), discussionSession=null, injectedEntries=[], discussionBusy=false;
 let modelConfigState=null, modelOptionsCache={}, cursorCatalogCache=null;
 
-async function api(p,o={}){const clean=String(p).replace(/^\/+/, '');const r=await fetch(clean,o);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(e){d={error:t}}if(!r.ok)throw new Error(d.error||r.statusText);return d}
+async function api(p,o={}){
+  const opts={cache:'no-store',...o};
+  let path=String(p).replace(/^\/+/, '');
+  if((opts.method||'GET').toUpperCase()==='GET'){
+    path += (path.includes('?') ? '&' : '?') + '_=' + Date.now();
+  }
+  const r=await fetch(path,opts);
+  const t=await r.text();
+  let d={};
+  try{d=t?JSON.parse(t):{}}catch(e){d={error:t}}
+  if(!r.ok)throw new Error(d.error||r.statusText);
+  return d;
+}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 
 function effortLabel(v){
@@ -567,6 +579,7 @@ async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.'
 async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
 async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups]};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
 async function refreshEverything(){try{await api('/api/tick',{method:'POST'})}catch(e){}await loadJobs();if(selectedJob)await loadJob(selectedJob)}
+async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
 async function loadJobs(){const arr=await api('/api/jobs');jobs.innerHTML=arr.map(j=>`<div class="job ${j.job_id===selectedJob?'selected':''}" onclick="selectJob('${esc(j.job_id)}')"><b>${esc(j.job_id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`).join('')||'<div class="job">No jobs.</div>'}
 async function selectJob(id){selectedJob=id;await loadJobs();await loadJob(id)}
 async function loadJob(id){const d=await api('/api/job/'+encodeURIComponent(id));const l=await api('/api/job/'+encodeURIComponent(id)+'/logs');const s=d.status||{};selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';selectedMeta.textContent=s.reason||'';logs.textContent='=== STDOUT ===\n'+(l.stdout||'')+'\n\n=== STDERR ===\n'+(l.stderr||'')}
@@ -575,7 +588,20 @@ async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/
 async function removeTracked(p){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:p})}),null,2);await loadTracked()}
 async function loadRegistryContexts(){const arr=await api('/api/registry_contexts');registryContexts.innerHTML=arr.map(r=>`<label class="item"><input type="checkbox" ${selectedGroups.has(r.folder_path)?'checked':''} onchange="this.checked?selectedGroups.add('${esc(r.folder_path)}'):selectedGroups.delete('${esc(r.folder_path)}');counts()"> <b>${esc(r.folder_path)}</b> [${esc(r.code_type)}]<div class="muted">${esc(r.metadata_path)} | files: ${r.file_count}</div></label>`).join('')||'<div class="muted">No registry contexts. Add tracked folders then refresh.</div>';counts()}
 function renderNode(n){if(n.type==='file'){return `<label class="item"><input type="checkbox" ${selectedFiles.has(n.path)?'checked':''} onchange="this.checked?selectedFiles.add('${esc(n.path)}'):selectedFiles.delete('${esc(n.path)}');counts()"> ${esc(n.path)} <span class="muted">${n.size}</span></label>`}return `<details class="dir" ${n.path==='.'?'open':''}><summary>${esc(n.name)}</summary>${(n.children||[]).map(renderNode).join('')}</details>`}
-async function loadTree(){fileTree.innerHTML=renderNode(await api('/api/file_tree'));counts()}
+async function loadTree(){
+  try{
+    fileTree.textContent='Loading...';
+    const tree=await api('/api/file_tree');
+    if(!tree || tree.error){
+      fileTree.textContent='Failed to load tree: '+(tree&&tree.error||'empty response');
+      return;
+    }
+    fileTree.innerHTML=renderNode(tree);
+  }catch(e){
+    fileTree.textContent='Failed to load tree: '+(e.message||e);
+  }
+  counts();
+}
 async function gitAction(action){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}),null,2)}
 async function gitCommit(){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'commit',message:commitMsg.value})}),null,2)}
 
