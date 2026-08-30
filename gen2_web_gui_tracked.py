@@ -1038,7 +1038,6 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/model_config': return jresp(self,model_config_bootstrap())
             q=urlparse(self.path).query
             if path=='/api/model_config/models':
-                from urllib.parse import parse_qs
                 params=parse_qs(q)
                 source=(params.get('source') or ['relay'])[0]
                 return jresp(self,model_config_list_models(source))
