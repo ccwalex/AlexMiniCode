@@ -85,6 +85,8 @@ button:disabled{opacity:.55;cursor:wait}
 <div><label>Effort</label><select id="jobEffort"><option value="l" selected>low</option><option value="m">medium</option><option value="h">high</option></select></div>
 <div><label>Max tokens</label><input id="jobMaxTokens" type="number" value="16384"></div>
 </div>
+<div class="small" style="margin-top:10px">Subagents (per job). Defaults preset from Model Config. Used when the planner calls /subagent.</div>
+<div id="jobSubagentConfig"></div>
 <label>Shell instructions</label>
 <textarea id="shellPrompt" rows="4">Allow creating and editing project files.
 Allow running Python scripts.
@@ -166,7 +168,7 @@ Do not allow shell redirection for file writes.</textarea>
 <div id="modelConfigModal" class="modal-backdrop">
 <div class="modal wide">
 <h2>Model Config</h2>
-<div class="small">Configure LLM source, model, effort, and max tokens for each agent role. Cursor model lists are fetched live and are not stored.</div>
+<div class="small">Configure LLM source, model, effort, and max tokens for each agent role, including explore/review/implement subagents. Cursor model lists are fetched live and are not stored.</div>
 <div id="modelConfigStatus" class="small"></div>
 <table class="config-table">
 <thead><tr><th>Role</th><th>Source</th><th>Model</th><th>Effort</th><th>Max tokens</th></tr></thead>
@@ -264,12 +266,12 @@ function findMatchingModelOption(models, selectedId, selectedParams){
   return encodeModelOption({id:selectedId||'',params});
 }
 
-async function populateJobModelSelect(source, selected, selectedParams){
-  const sel=document.getElementById('jobModel');
+async function populateNamedModelSelect(selectId, source, selected, selectedParams){
+  const sel=document.getElementById(selectId);
   if(!sel) return;
   sel.innerHTML='<option>loading...</option>';
   try{
-    const models=await fetchModelsForSource(source, true);
+    const models=await fetchModelsForSource(source, false);
     const selectedValue=findMatchingModelOption(models, selected, selectedParams);
     sel.innerHTML=renderModelOptions(models, selectedValue);
     if(selected && ![...sel.options].some(o=>o.value===selectedValue)){
@@ -280,16 +282,89 @@ async function populateJobModelSelect(source, selected, selectedParams){
   }
 }
 
+async function populateJobModelSelect(source, selected, selectedParams){
+  await populateNamedModelSelect('jobModel', source, selected, selectedParams);
+}
+
+function jobSubagentRoles(){
+  const fromApi=modelConfigState?.subagent_roles;
+  if(Array.isArray(fromApi) && fromApi.length) return fromApi;
+  return [
+    {id:'subagent_explore',label:'Subagent — explore'},
+    {id:'subagent_review',label:'Subagent — review'},
+    {id:'subagent_implement',label:'Subagent — implement'}
+  ];
+}
+
+function jobRoleDomId(roleId){
+  return String(roleId||'').replace(/[^a-zA-Z0-9_]/g,'_');
+}
+
+async function renderJobSubagentConfig(){
+  const box=document.getElementById('jobSubagentConfig');
+  if(!box) return;
+  const roles=jobSubagentRoles();
+  const cfg=modelConfigState?.config?.roles||{};
+  box.innerHTML=roles.map(r=>{
+    const id=jobRoleDomId(r.id);
+    const entry=cfg[r.id]||{};
+    return `<div class="small" style="margin-top:8px">${esc(r.label||r.id)}</div>
+      <div class="row4" data-job-role="${esc(r.id)}">
+        <div><label>Source</label><select class="job-role-source" onchange="onJobRoleSourceChange('${esc(r.id)}')">
+          <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+          <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
+        </select></div>
+        <div><label>Model</label><select class="job-role-model" id="jobRoleModel_${id}"></select></div>
+        <div><label>Effort</label><select class="job-role-effort">
+          <option value="l" ${entry.effort==='l'?'selected':''}>low</option>
+          <option value="m" ${(!entry.effort||entry.effort==='m')?'selected':''}>medium</option>
+          <option value="h" ${entry.effort==='h'?'selected':''}>high</option>
+        </select></div>
+        <div><label>Max tokens</label><input class="job-role-max" type="number" value="${esc(entry.max_tokens||16384)}"></div>
+      </div>`;
+  }).join('');
+  for(const r of roles){
+    const entry=cfg[r.id]||{};
+    await populateNamedModelSelect('jobRoleModel_'+jobRoleDomId(r.id), entry.source||'relay', entry.model||'', entry.cursor_params||[]);
+  }
+}
+
 async function applyJobPlannerDefaults(entry){
   entry=entry||modelConfigState?.config?.roles?.main_planner||modelConfigState?.summary?.main_planner||{};
   jobSource.value=entry.source||'relay';
   jobEffort.value=entry.effort||'l';
   jobMaxTokens.value=entry.max_tokens||16384;
+  await renderJobSubagentConfig();
   await populateJobModelSelect(jobSource.value, entry.model||'mini', entry.cursor_params||[]);
 }
 
 async function onJobSourceChange(){
   await populateJobModelSelect(jobSource.value, '');
+}
+
+async function onJobRoleSourceChange(roleId){
+  const row=document.querySelector(`#jobSubagentConfig [data-job-role="${roleId}"]`);
+  if(!row) return;
+  const source=row.querySelector('.job-role-source').value;
+  await populateNamedModelSelect('jobRoleModel_'+jobRoleDomId(roleId), source, '');
+}
+
+function collectJobRoleOverrides(){
+  const overrides={};
+  document.querySelectorAll('#jobSubagentConfig [data-job-role]').forEach(row=>{
+    const role=row.dataset.jobRole;
+    const source=row.querySelector('.job-role-source').value;
+    const modelSel=readModelSelection(row.querySelector('.job-role-model'));
+    const entry={
+      source,
+      model:modelSel.model,
+      effort:row.querySelector('.job-role-effort').value,
+      max_tokens:parseInt(row.querySelector('.job-role-max').value||'16384',10)
+    };
+    if(source==='cursor' && modelSel.cursor_params) entry.cursor_params=modelSel.cursor_params;
+    overrides[role]=entry;
+  });
+  return overrides;
 }
 
 async function loadModelConfigSummary(){
@@ -402,12 +477,9 @@ function renderModelOptions(models, selectedValue){
   return opts;
 }
 
-async function renderModelConfigRows(){
-  const cfg=modelConfigState?.config?.roles||{};
-  const roles=modelConfigState?.roles||[];
-  modelConfigRows.innerHTML=roles.map(r=>{
-    const entry=cfg[r.id]||{};
-    return `<tr data-role="${esc(r.id)}">
+function roleConfigRowHtml(r, entry){
+  entry=entry||{};
+  return `<tr data-role="${esc(r.id)}">
       <td><b>${esc(r.label||r.id)}</b></td>
       <td><select class="cfg-source" onchange="onModelConfigSourceChange('${esc(r.id)}')">
         <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
@@ -421,7 +493,28 @@ async function renderModelConfigRows(){
       </select></td>
       <td><input class="cfg-max" type="number" value="${esc(entry.max_tokens||16384)}"></td>
     </tr>`;
-  }).join('');
+}
+
+async function renderModelConfigRows(){
+  const cfg=modelConfigState?.config?.roles||{};
+  const roles=modelConfigState?.roles||[];
+  const subIds=new Set((modelConfigState?.subagent_roles||jobSubagentRoles()).map(r=>r.id));
+  const parts=[];
+  const emit=(items)=>{
+    items.forEach(r=>parts.push(roleConfigRowHtml(r, cfg[r.id]||{})));
+  };
+  emit(roles.filter(r=>r.id==='main_planner'));
+  const subRoles=roles.filter(r=>subIds.has(r.id));
+  if(subRoles.length){
+    parts.push('<tr><td colspan="5" class="small" style="padding-top:12px"><b>Subagents</b></td></tr>');
+    emit(subRoles);
+  }
+  const other=roles.filter(r=>r.id!=='main_planner' && !subIds.has(r.id));
+  if(other.length){
+    parts.push('<tr><td colspan="5" class="small" style="padding-top:12px"><b>Other roles</b></td></tr>');
+    emit(other);
+  }
+  modelConfigRows.innerHTML=parts.join('');
   for(const r of roles){
     await populateModelSelect(r.id, cfg[r.id]?.source||'relay', cfg[r.id]?.model||'', cfg[r.id]?.cursor_params||[]);
   }
@@ -554,7 +647,7 @@ async function saveModelConfig(){
     const d=await api('/api/model_config/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config})});
     modelConfigState=await api('/api/model_config');
     applyModelSummaries(modelConfigState.summary||{});
-    await applyJobPlannerDefaults(modelConfigState.config?.roles?.main_planner);
+    await applyJobPlannerDefaults(modelConfigState.config?.roles?.main_planner||modelConfigState.summary?.main_planner);
     modelConfigStatus.textContent='Saved.';
   }catch(e){
     modelConfigStatus.textContent='Save failed: '+e.message;
@@ -577,7 +670,7 @@ async function stopCurrentJob(){if(!confirm('Stop the current running job?'))ret
 async function restartCurrentJob(){if(!confirm('Stop and restart the current running job?'))return;try{const d=await api('/api/restart_current_job',{method:'POST'});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart current failed:\n'+e.stack}}
 async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.');return}if(!confirm('Restart selected job as a new job?'))return;try{const d=await api('/api/restart_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:selectedJob})});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart selected failed:\n'+e.stack}}
 async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
-async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups]};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
+async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups],role_overrides:collectJobRoleOverrides()};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
 async function refreshEverything(){try{await api('/api/tick',{method:'POST'})}catch(e){}await loadJobs();if(selectedJob)await loadJob(selectedJob)}
 async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
 async function loadJobs(){const arr=await api('/api/jobs');jobs.innerHTML=arr.map(j=>`<div class="job ${j.job_id===selectedJob?'selected':''}" onclick="selectJob('${esc(j.job_id)}')"><b>${esc(j.job_id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`).join('')||'<div class="job">No jobs.</div>'}
@@ -755,6 +848,7 @@ async function confirmResolved(){
 }
 
 setInterval(()=>{if(executionMode.classList.contains('active')) refreshEverything()},2000);
+renderJobSubagentConfig();
 refreshEverything();loadTracked();loadTree();loadModelConfigSummary();
 </script>
 </body>

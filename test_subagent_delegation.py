@@ -17,7 +17,7 @@ import modules.build_prompt_v2 as prompt_module
 import modules.execute_api_call as api_module
 import modules.run_task_v2 as task_module
 import modules.subagent_runner as runner
-from modules.model_config import get_role_config
+from modules.model_config import get_role_config, role_override_scope
 from modules.parse_api_plan import parse_api_plan
 from modules.run_task_v2 import _subagent_feedback_from_execution_result
 
@@ -270,6 +270,26 @@ class SubagentDelegationTests(unittest.TestCase):
             child_prompt, _ = prompt_module.build_prompt_v2("task")
         self.assertIn("5. /subagent", parent_prompt)
         self.assertNotIn("5. /subagent", child_prompt)
+
+    def test_per_job_role_overrides_apply_to_subagent_roles(self):
+        with role_override_scope(
+            {
+                "subagent_explore": {
+                    "source": "cursor",
+                    "model": "job-explore",
+                    "effort": "h",
+                    "max_tokens": 1111,
+                }
+            }
+        ):
+            cfg = get_role_config("subagent_explore")
+            planner = get_role_config("main_planner")
+        self.assertEqual(cfg["model"], "job-explore")
+        self.assertEqual(cfg["source"], "cursor")
+        self.assertEqual(cfg["effort"], "h")
+        self.assertEqual(cfg["max_tokens"], 1111)
+        self.assertNotEqual(planner.get("model"), "job-explore")
+        self.assertNotEqual(get_role_config("subagent_explore")["model"], "job-explore")
 
     def test_main_loop_replans_with_only_subagent_summary(self):
         prompts = []

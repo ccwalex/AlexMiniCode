@@ -580,7 +580,12 @@ def normalize_submission(data):
     files=data.get('selected_files') if isinstance(data.get('selected_files'),list) else []
     groups=data.get('selected_registry_groups') if isinstance(data.get('selected_registry_groups'),list) else []
     ensure_module_path()
-    from modules.model_config import get_role_config
+    from modules.model_config import (
+        get_role_config,
+        normalize_role_overrides,
+        SUBAGENT_ROLES,
+        _normalize_role_entry,
+    )
     planner=get_role_config('main_planner')
     llm_source=str(data.get('llm_source') or data.get('source') or planner.get('source') or 'relay').strip().lower()
     if llm_source not in ('relay','cursor'): llm_source=planner.get('source') or 'relay'
@@ -592,6 +597,28 @@ def normalize_submission(data):
     out={'task':final_task(str(prompt).strip(),files,groups),'original_prompt':str(prompt).strip(),'selected_files':files,'selected_registry_groups':groups,'llm_source':llm_source,'model':model,'effort':effort,'max_tokens':max_tokens,'shell_instruction_prompt':data.get('shell_instruction_prompt') or DEFAULT_SHELL,'max_iterations':data.get('max_iterations'),'max_feedback_loops':data.get('max_feedback_loops'),'max_retries':data.get('max_retries')}
     if isinstance(cursor_params, list) and cursor_params:
         out['cursor_params']=cursor_params
+    raw_overrides=data.get('role_overrides') if isinstance(data.get('role_overrides'), dict) else {}
+    if not raw_overrides and isinstance(data.get('subagent_roles'), dict):
+        raw_overrides=data.get('subagent_roles')
+    merged_overrides={}
+    for role in SUBAGENT_ROLES:
+        base=get_role_config(role)
+        submitted=raw_overrides.get(role) if isinstance(raw_overrides.get(role), dict) else {}
+        short=role.replace('subagent_','',1)
+        if not submitted and isinstance(raw_overrides.get(short), dict):
+            submitted=raw_overrides.get(short)
+        merged={
+            'source': submitted.get('source') or submitted.get('llm_source') or base.get('source'),
+            'model': submitted.get('model') or base.get('model'),
+            'effort': submitted.get('effort') or base.get('effort'),
+            'max_tokens': submitted.get('max_tokens') if submitted.get('max_tokens') is not None else base.get('max_tokens'),
+        }
+        params=submitted.get('cursor_params') if isinstance(submitted.get('cursor_params'), list) else base.get('cursor_params')
+        if isinstance(params, list) and params:
+            merged['cursor_params']=params
+        merged_overrides[role]=_normalize_role_entry(merged, role)
+    if merged_overrides:
+        out['role_overrides']=normalize_role_overrides(merged_overrides)
     return out
 # jobs
 def create_job(config):
@@ -893,6 +920,7 @@ def model_config_bootstrap():
         default_model_config,
         LLM_ROLES,
         ROLE_LABELS,
+        SUBAGENT_ROLES,
         LLM_SOURCES,
         PARSE_FALLBACK_KINDS,
         PARSE_FALLBACK_LABELS,
@@ -906,6 +934,7 @@ def model_config_bootstrap():
         'summary': role_config_summary(),
         'parse_fallback_summary': parse_fallback_summary(),
         'roles': [{'id': role, 'label': ROLE_LABELS.get(role, role)} for role in LLM_ROLES],
+        'subagent_roles': [{'id': role, 'label': ROLE_LABELS.get(role, role)} for role in SUBAGENT_ROLES],
         'parse_fallback_kinds': [{'id': kind, 'label': PARSE_FALLBACK_LABELS.get(kind, kind)} for kind in PARSE_FALLBACK_KINDS],
         'sources': list(LLM_SOURCES),
     }

@@ -159,6 +159,7 @@ def run_job(job_dir):
                 max_iterations=config.get("max_iterations"),
                 max_feedback_loops=config.get("max_feedback_loops"),
                 max_retries=config.get("max_retries"),
+                role_overrides=config.get("role_overrides"),
             )
 
             safe_result = make_json_safe(result)

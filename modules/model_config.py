@@ -5,8 +5,10 @@ Global per-role LLM configuration for Gen2 agent components.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
+import contextvars
 
 from cfg import CFG
 from safe_path import safe_path
@@ -73,6 +75,11 @@ PARSE_FALLBACK_LABELS = {
 }
 
 CONFIG_REL_PATH = "agent_memory/model_config.json"
+SUBAGENT_ROLES = ("subagent_explore", "subagent_review", "subagent_implement")
+_role_overrides: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "llm_role_overrides",
+    default=None,
+)
 
 
 def _config_path() -> Path:
@@ -251,15 +258,39 @@ def get_parse_fallback(kind: str) -> dict:
     return entry
 
 
+def normalize_role_overrides(overrides: dict | None) -> dict:
+    raw = overrides if isinstance(overrides, dict) else {}
+    cleaned = {}
+    for role, entry in raw.items():
+        role_id = str(role or "").strip()
+        if role_id not in LLM_ROLES:
+            continue
+        cleaned[role_id] = _normalize_role_entry(entry, role_id)
+    return cleaned
+
+
+@contextmanager
+def role_override_scope(overrides: dict | None):
+    token = _role_overrides.set(normalize_role_overrides(overrides) or None)
+    try:
+        yield
+    finally:
+        _role_overrides.reset(token)
+
+
 def get_role_config(role: str) -> dict:
     role = str(role or "").strip()
     if role not in LLM_ROLES:
         raise ValueError(f"unknown LLM role: {role}")
 
-    config = load_model_config()
-    entry = config.get("roles", {}).get(role) or _default_role_config(role)
-    entry = _normalize_role_entry(entry, role)
-    entry = deepcopy(entry)
+    overrides = _role_overrides.get() or {}
+    if role in overrides:
+        entry = deepcopy(overrides[role])
+    else:
+        config = load_model_config()
+        entry = config.get("roles", {}).get(role) or _default_role_config(role)
+        entry = _normalize_role_entry(entry, role)
+        entry = deepcopy(entry)
     entry["effort_normalized"] = normalize_effort(entry["effort"])
     return entry
 
@@ -307,6 +338,11 @@ if __name__ == "__main__":
     assert set(cfg["roles"]) == set(LLM_ROLES)
     assert set(cfg["parse_fallbacks"]) == set(PARSE_FALLBACK_KINDS)
     assert get_role_config("main_planner")["source"] == "relay"
+    with role_override_scope({"subagent_explore": {"model": "override-model", "source": "cursor"}}):
+        overridden = get_role_config("subagent_explore")
+        assert overridden["model"] == "override-model"
+        assert overridden["source"] == "cursor"
+    assert get_role_config("subagent_explore")["model"] != "override-model"
     assert get_parse_fallback("execution")["model"]
     saved = save_model_config(cfg)
     assert saved["roles"]["debug"]["model"] == "mini"

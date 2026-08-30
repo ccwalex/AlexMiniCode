@@ -15,7 +15,8 @@ MODULE_METADATA = {
                 "shell_instruction_prompt": "str shell permission/safety instructions",
                 "max_iterations": "int or None",
                 "max_feedback_loops": "int or None",
-                "max_retries": "int or None"
+                "max_retries": "int or None",
+                "role_overrides": "dict or None per-job LLM role overrides"
             },
             "outputs": "dict with success bool, status, RunState, read_cache, outputs, and reason"
         }
@@ -43,7 +44,7 @@ from scratchpad import Scratchpad
 from run_state import RunState
 from append_run import append_run
 from preview import preview
-from model_config import get_role_config
+from model_config import get_role_config, role_override_scope
 
 
 def normalize_effort(effort):
@@ -267,6 +268,34 @@ def _call_planner_llm(system_prompt, user_prompt, max_tokens, model, effort, llm
     
 
 def run_task_v2(
+    task,
+    max_tokens=None,
+    model=None,
+    effort=None,
+    llm_source=None,
+    cursor_params=None,
+    shell_instruction_prompt="",
+    max_iterations=None,
+    max_feedback_loops=None,
+    max_retries=None,
+    role_overrides=None,
+):
+    with role_override_scope(role_overrides):
+        return _run_task_v2(
+            task,
+            max_tokens=max_tokens,
+            model=model,
+            effort=effort,
+            llm_source=llm_source,
+            cursor_params=cursor_params,
+            shell_instruction_prompt=shell_instruction_prompt,
+            max_iterations=max_iterations,
+            max_feedback_loops=max_feedback_loops,
+            max_retries=max_retries,
+        )
+
+
+def _run_task_v2(
     task,
     max_tokens=None,
     model=None,
