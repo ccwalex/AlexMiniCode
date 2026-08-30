@@ -119,7 +119,7 @@ Do not allow shell redirection for file writes.</textarea>
 <button class="secondary" onclick="loadTree()">Reload Tree</button>
 <div class="small">selected files: <span id="fileCount">0</span>; registries: <span id="regCount">0</span></div>
 <div class="file-tree-tools">
-  <input id="fileTreeFilter" placeholder="Filter files by path..." oninput="renderFileList()">
+  <input id="fileTreeFilter" placeholder="Filter files by path..." oninput="renderTree()">
   <label class="small"><input type="checkbox" id="includeAgentMemory" onchange="loadTree()"> agent_memory</label>
 </div>
 <div id="fileTreeMeta" class="small muted"></div>
@@ -688,60 +688,37 @@ async function loadTracked(){const d=await api('/api/tracked_folders');tracked.i
 async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}
 async function removeTracked(p){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:p})}),null,2);await loadTracked()}
 async function loadRegistryContexts(){const arr=await api('/api/registry_contexts');registryContexts.innerHTML=arr.map(r=>`<label class="item"><input type="checkbox" ${selectedGroups.has(r.folder_path)?'checked':''} onchange="this.checked?selectedGroups.add('${esc(r.folder_path)}'):selectedGroups.delete('${esc(r.folder_path)}');counts()"> <b>${esc(r.folder_path)}</b> [${esc(r.code_type)}]<div class="muted">${esc(r.metadata_path)} | files: ${r.file_count}</div></label>`).join('')||'<div class="muted">No registry contexts. Add tracked folders then refresh.</div>';counts()}
-let fileTreeData=[];
+let fileTreeData=null;
 function formatFileSize(n){
   const size=Number(n)||0;
   if(size<1024) return `${size} B`;
   if(size<1024*1024) return `${(size/1024).toFixed(1)} KB`;
   return `${(size/(1024*1024)).toFixed(1)} MB`;
 }
-function toggleSelectedFile(path, checked){
-  if(checked) selectedFiles.add(path);
-  else selectedFiles.delete(path);
-  counts();
-}
-function fileTreeLabel(entry){
-  return entry.label || entry.path || '';
-}
-function renderFileList(){
+function fileTreeQuery(){
   const filterEl=document.getElementById('fileTreeFilter');
-  const q=(filterEl&&filterEl.value||'').trim().toLowerCase();
-  const items=q?fileTreeData.filter(f=>{
-    const path=String(f.path||'').toLowerCase();
-    const label=fileTreeLabel(f).toLowerCase();
-    return path.includes(q)||label.includes(q);
-  }):fileTreeData;
-  if(!items.length){
-    fileTree.innerHTML=q?'<div class="muted">No files match filter.</div>':'<div class="muted">No files found.</div>';
+  return (filterEl&&filterEl.value||'').trim().toLowerCase();
+}
+function renderNode(n, q){
+  if(!n) return '';
+  if(n.type==='file'){
+    const hay=((n.path||'')+' '+(n.name||'')).toLowerCase();
+    if(q && !hay.includes(q)) return '';
+    return `<label class="item"><input type="checkbox" ${selectedFiles.has(n.path)?'checked':''} onchange="this.checked?selectedFiles.add('${esc(n.path)}'):selectedFiles.delete('${esc(n.path)}');counts()"> ${esc(n.path)} <span class="muted">${formatFileSize(n.size)}</span></label>`;
+  }
+  const kids=(n.children||[]).map(c=>renderNode(c,q)).join('');
+  const selfMatch=((n.path||'')+' '+(n.name||'')).toLowerCase().includes(q);
+  if(q && !kids && !selfMatch) return '';
+  return `<details class="dir" ${n.path==='.' || q?'open':''}><summary>${esc(n.name)}</summary>${kids}</details>`;
+}
+function renderTree(){
+  if(!fileTreeData || fileTreeData.error){
+    fileTree.innerHTML='<div class="muted">No files found.</div>';
     return;
   }
-  const frag=document.createDocumentFragment();
-  for(const f of items){
-    const label=document.createElement('label');
-    label.className='item';
-    const cb=document.createElement('input');
-    cb.type='checkbox';
-    cb.checked=selectedFiles.has(f.path);
-    cb.addEventListener('change',()=>toggleSelectedFile(f.path,cb.checked));
-    label.appendChild(cb);
-    label.append(' ');
-    const pathSpan=document.createElement('span');
-    pathSpan.textContent=fileTreeLabel(f);
-    label.appendChild(pathSpan);
-    if(f.label && f.label!==f.path){
-      const fullSpan=document.createElement('span');
-      fullSpan.className='muted';
-      fullSpan.textContent=' ('+f.path+')';
-      label.appendChild(fullSpan);
-    }
-    label.append(' ');
-    const sizeSpan=document.createElement('span');
-    sizeSpan.className='muted';
-    sizeSpan.textContent=formatFileSize(f.size);
-    label.appendChild(sizeSpan);
-    frag.appendChild(label);
-  }
-  fileTree.replaceChildren(frag);
+  const q=fileTreeQuery();
+  const html=renderNode(fileTreeData, q);
+  fileTree.innerHTML=html||(q?'<div class="muted">No files match filter.</div>':'<div class="muted">No files found.</div>');
 }
 async function loadTree(){
   const metaEl=document.getElementById('fileTreeMeta');
@@ -754,16 +731,16 @@ async function loadTree(){
       fileTree.textContent='Failed to load tree: '+(resp&&resp.error||'empty response');
       return;
     }
-    fileTreeData=Array.isArray(resp.files)?resp.files:[];
+    fileTreeData=resp;
     const meta=resp.meta||{};
     if(metaEl){
-      const shown=meta.shown ?? fileTreeData.length;
+      const shown=meta.shown ?? 0;
       const scope=meta.include_agent_memory?' (including agent_memory)':' (agent_memory excluded)';
       metaEl.textContent=meta.truncated
         ? `Showing first ${shown} files (limit ${meta.max_files||shown})${scope}. Use the filter box or raise the server limit if files are missing.`
-        : `${shown} files under ${meta.root||'agent root'}${scope}`;
+        : `${shown} files under ${meta.root||'project root'}${scope}`;
     }
-    renderFileList();
+    renderTree();
   }catch(e){
     fileTree.textContent='Failed to load tree: '+(e.message||e);
   }

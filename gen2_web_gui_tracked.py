@@ -257,87 +257,102 @@ def render_registry_context(groups):
     """Backward-compatible alias for render_module_registry."""
     return render_module_registry(groups)
 # file tree / injection
-def _tree_scan_rel(dirp, scan_root):
-    try:
-        rel = dirp.resolve().relative_to(scan_root).as_posix()
-    except Exception:
-        return '.'
-    return '.' if rel == '.' else rel
+def _tree_path_parts(scan_rel):
+    return [p for p in str(scan_rel or '').split('/') if p and p != '.']
 
 def _should_prune_tree_dir(scan_rel, include_agent_memory=False):
-    if not scan_rel or scan_rel == '.':
-        return False
-    if scan_rel == 'agent_memory/jobs' or scan_rel.startswith('agent_memory/jobs/'):
-        return True
-    if not include_agent_memory and (scan_rel == 'agent_memory' or scan_rel.startswith('agent_memory/')):
-        return True
+    parts = _tree_path_parts(scan_rel)
+    for i, part in enumerate(parts):
+        if part != 'agent_memory':
+            continue
+        if i + 1 < len(parts) and parts[i + 1] == 'jobs':
+            return True
+        if not include_agent_memory:
+            return True
     return False
 
 def file_tree_scan_root():
-    """GUI file picker scans the agent package, not its parent folder."""
-    return source_dir().resolve()
+    """GUI file picker scans the project folder that contains agent/."""
+    return project_root().resolve()
 
 def file_tree(max_files=10000, include_agent_memory=False):
-    """Return a flat file list for the GUI picker.
+    """Return a nested directory tree for the GUI picker.
 
-    Walks the agent package root with os.walk so files in each directory are
-    collected before descending into subdirectories. The old recursive builder
-    listed directories first, which could skip new files sitting in a folder
-    root once enough nested files were already counted.
+    Root is one level above agent/. Files in a directory are collected before
+    subdirectories so a file cap cannot hide siblings sitting in the folder root.
 
     agent_memory is excluded by default; pass include_agent_memory=True to scan it.
     agent_memory/jobs is always excluded.
     """
-    scan_root = file_tree_scan_root()
-    project = project_root().resolve()
-    files = []
+    root = file_tree_scan_root()
+    count = 0
     truncated = False
-    for dirpath, dirnames, filenames in os.walk(scan_root, topdown=True, followlinks=False):
-        dirp = Path(dirpath)
-        scan_rel = _tree_scan_rel(dirp, scan_root)
-        if _should_prune_tree_dir(scan_rel, include_agent_memory=include_agent_memory):
-            dirnames[:] = []
-            continue
-        dirnames[:] = sorted(
-            (d for d in dirnames if d not in EXCLUDE_DIRS),
-            key=str.lower,
+
+    def build(dirp):
+        nonlocal count, truncated
+        children = []
+        try:
+            entries = list(dirp.iterdir())
+        except Exception:
+            entries = []
+        files = sorted((p for p in entries if p.is_file()), key=lambda p: p.name.lower())
+        dirs = sorted(
+            (p for p in entries if p.is_dir() and p.name not in EXCLUDE_DIRS),
+            key=lambda p: p.name.lower(),
         )
-        for name in sorted(filenames, key=str.lower):
-            p = dirp / name
-            file_scan_rel = _tree_scan_rel(p, scan_root)
-            if _should_prune_tree_dir(file_scan_rel, include_agent_memory=include_agent_memory):
-                continue
+        for p in files:
+            if truncated:
+                break
             if p.suffix.lower() in EXCLUDE_SUFFIXES:
                 continue
             try:
-                rel = relpath(p)
+                r = relpath(p)
             except Exception:
+                continue
+            if _should_prune_tree_dir(r, include_agent_memory=include_agent_memory):
                 continue
             try:
                 size = p.stat().st_size
             except Exception:
                 size = 0
-            try:
-                label = p.resolve().relative_to(scan_root).as_posix()
-            except Exception:
-                label = rel
-            files.append({'path': rel, 'label': label, 'size': size})
-            if len(files) >= max_files:
+            children.append({'type': 'file', 'name': p.name, 'path': r, 'size': size})
+            count += 1
+            if count >= max_files:
                 truncated = True
                 break
-        if truncated:
-            break
-    return {
-        'files': files,
-        'meta': {
-            'root': str(scan_root),
-            'project_root': str(project),
-            'shown': len(files),
-            'truncated': truncated,
-            'max_files': max_files,
-            'include_agent_memory': bool(include_agent_memory),
-        },
+        for p in dirs:
+            if truncated:
+                break
+            try:
+                r = relpath(p)
+            except Exception:
+                continue
+            if _should_prune_tree_dir(r, include_agent_memory=include_agent_memory):
+                continue
+            node = build(p)
+            if node['children']:
+                children.append(node)
+        try:
+            dir_rel = relpath(dirp)
+        except Exception:
+            dir_rel = '.'
+        return {
+            'type': 'dir',
+            'name': dirp.name if dirp != root else '.',
+            'path': dir_rel,
+            'children': children,
+        }
+
+    tree = build(root)
+    tree['meta'] = {
+        'root': str(root),
+        'project_root': str(root),
+        'shown': count,
+        'truncated': truncated,
+        'max_files': max_files,
+        'include_agent_memory': bool(include_agent_memory),
     }
+    return tree
 def read_context_file(path, index, n=30000):
     """
     Render one file as prompt context.
