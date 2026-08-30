@@ -257,99 +257,68 @@ def render_registry_context(groups):
     """Backward-compatible alias for render_module_registry."""
     return render_module_registry(groups)
 # file tree / injection
-def _tree_path_parts(scan_rel):
-    return [p for p in str(scan_rel or '').split('/') if p and p != '.']
-
-def _should_prune_tree_dir(scan_rel, include_agent_memory=False):
-    parts = _tree_path_parts(scan_rel)
-    for i, part in enumerate(parts):
-        if part != 'agent_memory':
-            continue
-        if i + 1 < len(parts) and parts[i + 1] == 'jobs':
-            return True
-        if not include_agent_memory:
-            return True
-    return False
-
 def file_tree_scan_root():
     """GUI file picker scans the project folder that contains agent/."""
     return project_root().resolve()
 
-def file_tree(max_files=10000, include_agent_memory=False):
-    """Return a nested directory tree for the GUI picker.
+def file_tree(include_agent=False, include_agent_memory=False):
+    """Return a nested directory tree using the original recursive iterdir builder.
 
-    Root is one level above agent/. Files in a directory are collected before
-    subdirectories so a file cap cannot hide siblings sitting in the folder root.
-
-    agent_memory is excluded by default; pass include_agent_memory=True to scan it.
-    agent_memory/jobs is always excluded.
+    Root is one level above agent/. There is no file-count or size cap. agent/
+    and agent_memory are excluded by default; pass include_agent=True or
+    include_agent_memory=True to scan them. agent_memory/jobs is always excluded.
     """
     root = file_tree_scan_root()
     count = 0
-    truncated = False
 
     def build(dirp):
-        nonlocal count, truncated
+        nonlocal count
         children = []
         try:
-            entries = list(dirp.iterdir())
+            entries = sorted(dirp.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except Exception:
             entries = []
-        files = sorted((p for p in entries if p.is_file()), key=lambda p: p.name.lower())
-        dirs = sorted(
-            (p for p in entries if p.is_dir() and p.name not in EXCLUDE_DIRS),
-            key=lambda p: p.name.lower(),
-        )
-        for p in files:
-            if truncated:
-                break
-            if p.suffix.lower() in EXCLUDE_SUFFIXES:
-                continue
-            try:
-                r = relpath(p)
-            except Exception:
-                continue
-            if _should_prune_tree_dir(r, include_agent_memory=include_agent_memory):
-                continue
-            try:
-                size = p.stat().st_size
-            except Exception:
-                size = 0
-            children.append({'type': 'file', 'name': p.name, 'path': r, 'size': size})
-            count += 1
-            if count >= max_files:
-                truncated = True
-                break
-        for p in dirs:
-            if truncated:
-                break
-            try:
-                r = relpath(p)
-            except Exception:
-                continue
-            if _should_prune_tree_dir(r, include_agent_memory=include_agent_memory):
-                continue
-            node = build(p)
-            if node['children']:
-                children.append(node)
-        try:
-            dir_rel = relpath(dirp)
-        except Exception:
-            dir_rel = '.'
-        return {
-            'type': 'dir',
-            'name': dirp.name if dirp != root else '.',
-            'path': dir_rel,
-            'children': children,
-        }
+        for p in entries:
+            if p.is_dir():
+                if p.name in EXCLUDE_DIRS:
+                    continue
+                if dirp == root and p.name == 'agent' and not include_agent:
+                    continue
+                if p.name == 'agent_memory' and not include_agent_memory:
+                    continue
+                try:
+                    r = relpath(p)
+                except Exception:
+                    continue
+                if r == 'agent_memory/jobs' or r.startswith('agent_memory/jobs/') or r.endswith('/agent_memory/jobs') or '/agent_memory/jobs/' in r:
+                    continue
+                node = build(p)
+                if node['children']:
+                    children.append(node)
+            else:
+                if p.suffix.lower() in EXCLUDE_SUFFIXES:
+                    continue
+                try:
+                    r = relpath(p)
+                except Exception:
+                    continue
+                if 'agent_memory/jobs/' in r:
+                    continue
+                try:
+                    size = p.stat().st_size
+                except Exception:
+                    size = 0
+                children.append({'type': 'file', 'name': p.name, 'path': r, 'size': size})
+                count += 1
+        return {'type': 'dir', 'name': dirp.name if dirp != root else '.', 'path': relpath(dirp), 'children': children}
 
     tree = build(root)
     tree['meta'] = {
         'root': str(root),
         'project_root': str(root),
         'shown': count,
-        'truncated': truncated,
-        'max_files': max_files,
+        'truncated': False,
+        'include_agent': bool(include_agent),
         'include_agent_memory': bool(include_agent_memory),
     }
     return tree
@@ -1044,8 +1013,8 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/jobs': return jresp(self,list_jobs())
             if path=='/api/file_tree':
                 params=parse_qs(urlparse(self.path).query)
-                include_memory=(params.get('include_agent_memory') or ['0'])[0].lower() in ('1','true','yes','on')
-                return jresp(self,file_tree(include_agent_memory=include_memory))
+                flag=lambda k:(params.get(k) or ['0'])[0].lower() in ('1','true','yes','on')
+                return jresp(self,file_tree(include_agent=flag('include_agent'), include_agent_memory=flag('include_agent_memory')))
             if path=='/api/tracked_folders': return jresp(self,tracked_folders())
             if path=='/api/registry_contexts': return jresp(self,registry_contexts())
             if path=='/api/subagent/status': return jresp(self,subagent_status())

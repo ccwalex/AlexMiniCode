@@ -120,6 +120,7 @@ Do not allow shell redirection for file writes.</textarea>
 <div class="small">selected files: <span id="fileCount">0</span>; registries: <span id="regCount">0</span></div>
 <div class="file-tree-tools">
   <input id="fileTreeFilter" placeholder="Filter files by path..." oninput="renderTree()">
+  <label class="small"><input type="checkbox" id="includeAgent" onchange="loadTree()"> agent/</label>
   <label class="small"><input type="checkbox" id="includeAgentMemory" onchange="loadTree()"> agent_memory</label>
 </div>
 <div id="fileTreeMeta" class="small muted"></div>
@@ -722,11 +723,15 @@ function renderTree(){
 }
 async function loadTree(){
   const metaEl=document.getElementById('fileTreeMeta');
+  const includeAgent=!!document.getElementById('includeAgent')?.checked;
   const includeMemory=!!document.getElementById('includeAgentMemory')?.checked;
   try{
     fileTree.textContent='Loading...';
     if(metaEl) metaEl.textContent='';
-    const resp=await api('/api/file_tree'+(includeMemory?'?include_agent_memory=1':''));
+    const qs=[];
+    if(includeAgent) qs.push('include_agent=1');
+    if(includeMemory) qs.push('include_agent_memory=1');
+    const resp=await api('/api/file_tree'+(qs.length?'?'+qs.join('&'):''));
     if(!resp || resp.error){
       fileTree.textContent='Failed to load tree: '+(resp&&resp.error||'empty response');
       return;
@@ -735,10 +740,10 @@ async function loadTree(){
     const meta=resp.meta||{};
     if(metaEl){
       const shown=meta.shown ?? 0;
-      const scope=meta.include_agent_memory?' (including agent_memory)':' (agent_memory excluded)';
-      metaEl.textContent=meta.truncated
-        ? `Showing first ${shown} files (limit ${meta.max_files||shown})${scope}. Use the filter box or raise the server limit if files are missing.`
-        : `${shown} files under ${meta.root||'project root'}${scope}`;
+      const parts=[];
+      parts.push(meta.include_agent?'including agent/':'agent/ excluded');
+      parts.push(meta.include_agent_memory?'including agent_memory':'agent_memory excluded');
+      metaEl.textContent=`${shown} files under ${meta.root||'project root'} (${parts.join(', ')})`;
     }
     renderTree();
   }catch(e){
