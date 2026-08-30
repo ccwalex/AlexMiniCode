@@ -38,6 +38,9 @@ LLM_SOURCES = ("relay", "cursor")
 
 LLM_ROLES = (
     "main_planner",
+    "subagent_explore",
+    "subagent_review",
+    "subagent_implement",
     "meta_writer",
     "verifier",
     "local_repair",
@@ -48,6 +51,9 @@ LLM_ROLES = (
 
 ROLE_LABELS = {
     "main_planner": "Main planner",
+    "subagent_explore": "Subagent — explore",
+    "subagent_review": "Subagent — review",
+    "subagent_implement": "Subagent — implement",
     "meta_writer": "Meta writer",
     "verifier": "Verifier",
     "local_repair": "Local repair",
@@ -124,6 +130,10 @@ def _default_role_config(role: str) -> dict:
         defaults.update({"effort": "l", "max_tokens": 4096})
     elif role == "discussion":
         defaults.update({"effort": "l"})
+    elif role == "subagent_explore":
+        defaults.update({"effort": "l", "max_tokens": 8192})
+    elif role == "subagent_review":
+        defaults.update({"effort": "m", "max_tokens": 8192})
 
     return defaults
 

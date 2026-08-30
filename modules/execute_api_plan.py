@@ -227,7 +227,14 @@ if __name__ == "__main__":
 
     executed_urls = []
 
-    def fake_execute_api_call(call, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    def fake_execute_api_call(
+        call,
+        run_state=None,
+        read_cache=None,
+        shell_instruction_prompt="",
+        scratchpad=None,
+        mark_task_done=True,
+    ):
         url = call.get("url")
         payload = call.get("payload", {})
         executed_urls.append(url)

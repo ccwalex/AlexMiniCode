@@ -164,34 +164,30 @@ def _source_path_from_metadata(meta_file_path, folder_path, metadata_root):
         return meta_file_path
 
 def _load_registry_file_entry(meta_file_path, folder_path, metadata_root):
-    """Load one metadata file into a compact registry entry without mutating disk content."""
-    entry = {}
+    """Load one metadata file as name/type/description/functions/path only."""
+    source_path = _source_path_from_metadata(
+        meta_file_path,
+        folder_path,
+        metadata_root,
+    )
 
     try:
+        ensure_module_path()
+        from modules.meta_writer import sanitize_module_metadata
+
         p = resolve_project_path(meta_file_path)
         txt = p.read_text(encoding="utf-8", errors="replace")
         content = _parse_metadata_file_content(txt)
-
         if isinstance(content, dict) and content.get("path"):
-            entry["source_path"] = content["path"]
-        else:
-            entry["source_path"] = _source_path_from_metadata(
-                meta_file_path,
-                folder_path,
-                metadata_root,
-            )
+            source_path = content["path"]
 
-        entry["content"] = _truncate_registry_content(content)
-        return entry
+        entry = sanitize_module_metadata(content, path=source_path)
+        if not entry.get("path"):
+            entry["path"] = source_path
+        return _truncate_registry_content(entry)
 
     except Exception as e:
-        entry["source_path"] = _source_path_from_metadata(
-            meta_file_path,
-            folder_path,
-            metadata_root,
-        )
-        entry["error"] = str(e)
-        return entry
+        return {"path": source_path, "error": str(e)}
 
 def folder_registry_dict(folder_path):
     """
@@ -222,7 +218,9 @@ def folder_registry_dict(folder_path):
             folder_path,
             metadata_path,
         )
-        key = file_entry.get("source_path") or meta_file_path
+        if not isinstance(file_entry, dict):
+            continue
+        key = file_entry.get("path") or meta_file_path
         files[key] = file_entry
 
     block = {

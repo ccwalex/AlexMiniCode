@@ -11,11 +11,12 @@ import traceback
 from repair_write_step import repair_write_step
 from scratchpad import execute_scratchpad
 from conflict import execute_conflict
+from subagent_runner import run_subagent
 
 MODULE_METADATA = {
     "name": "execute_api_call",
     "type": "function",
-    "description": "Execute one normalized Gen2 API call using existing read, write, edit, shell, verifier, refresh, and feedback modules.",
+    "description": "Execute one normalized Gen2 API call using file, shell, feedback, and sequential subagent modules.",
     "functions": [
         {
             "name": "execute_api_call",
@@ -519,6 +520,29 @@ def execute_api_call(
             result["output"] = output
             return result
 
+        if url == "/subagent":
+            subagent_result = run_subagent(
+                task=payload.get("task"),
+                role=payload.get("role", "explore"),
+                mode=payload.get("mode", "process"),
+                files=payload.get("files", []),
+                timeout_seconds=payload.get("timeout_seconds", 600),
+            )
+            if payload.get("mode", "process") == "process":
+                # A process subagent may mutate through shell commands or stop
+                # after a partial write, neither of which guarantees complete
+                # artifact reporting. Conservatively discard all cached files.
+                read_cache.clear()
+
+            # A completed delegation call is execution-successful even when the
+            # child reports task failure. The parent planner must receive that
+            # structured result and decide how to continue; debug repair is for
+            # broken API execution, not unsuccessful delegated work.
+            result["success"] = True
+            result["output"] = {"subagent_result": subagent_result}
+            result["request_feedback"] = True
+            return result
+
         if url == "/request_feedback":
             fb_res = request_feedback(run_state, read_cache)
 
@@ -776,6 +800,10 @@ if __name__ == "__main__":
     sys.modules[__name__].verify_write = lambda p, c, use_llm=True: {
         "approved": False,
         "reason": "rejected",
+    }
+    sys.modules[__name__].repair_write_step = lambda p, c, reason: {
+        "success": False,
+        "reason": reason,
     }
     res = execute_api_call(
         {"url": "/write", "payload": {"path": "w2.py", "content": "c"}},

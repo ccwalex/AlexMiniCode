@@ -22,6 +22,7 @@ ALLOWED_URLS = {
     "/write",
     "/edit",
     "/shell",
+    "/subagent",
     "/request_feedback",
     "/scratchpad",
     "/write_llm_memory",
@@ -218,6 +219,10 @@ def normalize_candidate(candidate):
     for i, call in enumerate(candidate):
         calls.append(validate_call(call, i))
 
+    for i, call in enumerate(calls[:-1]):
+        if call.get("url") == "/subagent":
+            raise ValueError(f"call {i} /subagent must be the final call in a planner turn")
+
     return calls
 
 
@@ -269,6 +274,45 @@ def validate_call(call, index):
 
     elif url == "/shell":
         _require_str(payload, "cmd", index, url)
+
+    elif url == "/subagent":
+        _require_str(payload, "task", index, url)
+        role = str(payload.get("role") or "explore").strip().lower()
+        if role not in {"explore", "review", "implement"}:
+            raise ValueError(
+                f"call {index} /subagent payload.role must be explore, review, or implement"
+            )
+        mode = str(payload.get("mode") or "process").strip().lower()
+        if mode not in {"process", "readonly"}:
+            raise ValueError(
+                f"call {index} /subagent payload.mode must be process or readonly"
+            )
+        if mode == "readonly" and role == "implement":
+            raise ValueError(
+                f"call {index} /subagent implement role requires process mode"
+            )
+        files = payload.get("files", [])
+        if files is None:
+            files = []
+        if not isinstance(files, list) or not all(
+            isinstance(path, str) and path.strip() for path in files
+        ):
+            raise ValueError(
+                f"call {index} /subagent payload.files must be a list of non-empty strings"
+            )
+        timeout_seconds = payload.get("timeout_seconds", 600)
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
+            raise ValueError(
+                f"call {index} /subagent payload.timeout_seconds must be numeric"
+            )
+        payload.update(
+            {
+                "role": role,
+                "mode": mode,
+                "files": files,
+                "timeout_seconds": max(1, min(int(timeout_seconds), 3600)),
+            }
+        )
 
     elif url == "/request_feedback":
         # Empty payload is fine.

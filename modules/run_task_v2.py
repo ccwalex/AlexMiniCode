@@ -147,6 +147,49 @@ def _shell_feedback_from_execution_result(execution_result, run_state=None):
     return ""
 
 
+def _subagent_feedback_from_execution_result(execution_result, max_chars=5000):
+    """Return only bounded subagent deliverables, never child trace/context."""
+    blocks = []
+    for result in execution_result.get("results") or []:
+        if not isinstance(result, dict) or result.get("url") != "/subagent":
+            continue
+        output = result.get("output")
+        subagent_result = output.get("subagent_result") if isinstance(output, dict) else None
+        if not isinstance(subagent_result, dict):
+            continue
+        safe_result = {
+            "success": bool(subagent_result.get("success")),
+            "status": str(subagent_result.get("status") or ""),
+            "role": str(subagent_result.get("role") or ""),
+            "mode": str(subagent_result.get("mode") or ""),
+            "summary": str(subagent_result.get("summary") or ""),
+            "artifacts": [
+                str(path)[:300] for path in list(subagent_result.get("artifacts") or [])[:20]
+            ],
+            "run_id": str(subagent_result.get("run_id") or ""),
+            "error": str(subagent_result.get("error") or "")[:1000],
+        }
+        encoded = json.dumps(safe_result, ensure_ascii=False)
+        if len(encoded) > max_chars:
+            overflow = len(encoded) - max_chars
+            keep = max(0, len(safe_result["summary"]) - overflow - 100)
+            safe_result["summary"] = safe_result["summary"][:keep] + "\n[TRUNCATED]"
+            encoded = json.dumps(safe_result, ensure_ascii=False)
+        if len(encoded) > max_chars:
+            safe_result["artifacts"] = []
+            safe_result["error"] = safe_result["error"][:200]
+            encoded = json.dumps(safe_result, ensure_ascii=False)
+        blocks.append(f"<subagent_result>{encoded}</subagent_result>")
+    return "\n".join(blocks)
+
+
+def _done_summary(execution_result):
+    for result in reversed(execution_result.get("results") or []):
+        if isinstance(result, dict) and result.get("url") == "/done":
+            return str(result.get("output") or "").strip()
+    return ""
+
+
 def _format_debug_remarks(debug_result, max_output_chars=8000):
     if not isinstance(debug_result, dict):
         return ""
@@ -352,7 +395,10 @@ def run_task_v2(
                 "reason": reason,
             }
 
-        if feedback_loops >= max_feedback_loops:
+        # Allow the planner to consume the result of the final permitted
+        # feedback-producing call. Fail only if another feedback turn exceeded
+        # the configured allowance.
+        if feedback_loops > max_feedback_loops:
             reason = "max feedback loops reached"
             print(f"\n{reason}")
             _add_error(run_state, "run_task_v2", reason)
@@ -488,15 +534,20 @@ def run_task_v2(
                 execution_result,
                 run_state=run_state,
             )
+            subagent_feedback = _subagent_feedback_from_execution_result(execution_result)
 
             if shell_feedback.strip():
                 shell_context = _append_bounded(shell_context, shell_feedback)
+            if subagent_feedback.strip():
+                execution_notes = _append_bounded(execution_notes, subagent_feedback)
 
             feedback_loops += 1
             print("\n[Request Feedback Triggered]")
             print(f"[file_context paths] {list(read_cache.keys())}")
             if shell_feedback.strip():
                 print(shell_feedback[:4000])
+            if subagent_feedback.strip():
+                print(subagent_feedback[:4000])
             continue
 
         if status == "done":
@@ -513,6 +564,7 @@ def run_task_v2(
                 "read_cache": read_cache,
                 "outputs": outputs,
                 "reason": reason,
+                "summary": _done_summary(execution_result),
             }
 
         if status == "completed":
@@ -738,9 +790,12 @@ def run_task_v2(
                             resume_result,
                             run_state=run_state,
                         )
+                        subagent_feedback = _subagent_feedback_from_execution_result(resume_result)
 
                         if shell_feedback.strip():
                             shell_context = _append_bounded(shell_context, shell_feedback)
+                        if subagent_feedback.strip():
+                            execution_notes = _append_bounded(execution_notes, subagent_feedback)
 
                         consumed = _calls_consumed_by_execution(
                             pending_resume_calls,
@@ -756,11 +811,15 @@ def run_task_v2(
                             )
                             if shell_feedback.strip():
                                 print(shell_feedback[:4000])
+                            if subagent_feedback.strip():
+                                print(subagent_feedback[:4000])
                             continue
 
                         print("\n[Request Feedback Triggered After Debug Resume]")
                         if shell_feedback.strip():
                             print(shell_feedback[:4000])
+                        if subagent_feedback.strip():
+                            print(subagent_feedback[:4000])
                         break
 
                     if resume_status == "done":
@@ -777,6 +836,7 @@ def run_task_v2(
                             "read_cache": read_cache,
                             "outputs": outputs,
                             "reason": reason,
+                            "summary": _done_summary(resume_result),
                         }
 
                     if resume_status == "completed":
@@ -892,7 +952,7 @@ if __name__ == "__main__":
             "error": None,
         }
 
-    def fake_execute_done(calls, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    def fake_execute_done(calls, run_state=None, read_cache=None, shell_instruction_prompt="", **kwargs):
         return {
             "success": True,
             "status": "done",
@@ -931,7 +991,7 @@ if __name__ == "__main__":
     # Request feedback then done.
     execute_calls = {"n": 0}
 
-    def fake_execute_feedback_then_done(calls, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    def fake_execute_feedback_then_done(calls, run_state=None, read_cache=None, shell_instruction_prompt="", **kwargs):
         execute_calls["n"] += 1
 
         if execute_calls["n"] == 1:
@@ -988,7 +1048,12 @@ if __name__ == "__main__":
     assert parse_calls["n"] >= 2, parse_calls
 
     # Execution failure repaired by debug with no remaining plan steps.
-    def fake_execute_failed(calls, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    debug_execution_calls = {"n": 0}
+
+    def fake_execute_failed(calls, run_state=None, read_cache=None, shell_instruction_prompt="", **kwargs):
+        debug_execution_calls["n"] += 1
+        if debug_execution_calls["n"] > 1:
+            return fake_execute_done(calls, run_state, read_cache, shell_instruction_prompt)
         return {
             "success": False,
             "status": "failed",
@@ -1043,7 +1108,7 @@ if __name__ == "__main__":
             "error": None,
         }
 
-    def fake_execute_fail_then_resume_done(calls, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    def fake_execute_fail_then_resume_done(calls, run_state=None, read_cache=None, shell_instruction_prompt="", **kwargs):
         resume_calls["n"] += 1
 
         if len(calls) == 2:
@@ -1092,7 +1157,7 @@ if __name__ == "__main__":
             "error": None,
         }
 
-    def fake_execute_fail_then_feedback_resume(calls, run_state=None, read_cache=None, shell_instruction_prompt=""):
+    def fake_execute_fail_then_feedback_resume(calls, run_state=None, read_cache=None, shell_instruction_prompt="", **kwargs):
         resume_feedback_calls["n"] += 1
         resume_feedback_calls["batches"].append(list(calls))
 

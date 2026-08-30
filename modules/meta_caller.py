@@ -21,6 +21,7 @@ from build_react_tsx_meta_prompt import build_react_tsx_meta_prompt
 from build_typescript_meta_prompt import build_typescript_meta_prompt
 from call_llm import call_llm_role
 from cfg import CFG
+from meta_writer import sanitize_module_metadata
 
 
 def meta_caller(path: str, content: str) -> dict:
@@ -46,8 +47,12 @@ def meta_caller(path: str, content: str) -> dict:
 
     cfg = CFG()
 
-    return call_llm_role(
+    raw = call_llm_role(
         role="meta_writer",
         messages=messages,
         timeout=cfg.get_timeout("planner_call"),
     )
+    metadata = sanitize_module_metadata(raw, path=path)
+    if not metadata.get("name"):
+        return {"error": "Could not parse module metadata from LLM response"}
+    return metadata

@@ -17,7 +17,7 @@ import traceback
 
 from track_folders import TrackFolders
 from meta_caller import meta_caller
-from meta_writer import meta_writer
+from meta_writer import meta_writer, sanitize_module_metadata
 from read_file import read_file
 from cfg import CFG
 from safe_path import safe_path
@@ -108,14 +108,9 @@ def _write_metadata_fallback(metadata, expected_meta_full, rel_file_path):
     """
     os.makedirs(os.path.dirname(expected_meta_full), exist_ok=True)
 
-    if isinstance(metadata, dict):
-        data = dict(metadata)
-    else:
-        data = {
-            "metadata": metadata
-        }
-
-    data.setdefault("path", rel_file_path)
+    data = sanitize_module_metadata(metadata, path=rel_file_path)
+    if not data.get("name"):
+        return
 
     with open(expected_meta_full, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -209,9 +204,14 @@ def refresh_registry():
 
                     metadata = meta_caller(path=rel_file_path, content=content)
 
-                    if metadata is None:
+                    if not isinstance(metadata, dict) or metadata.get("error") or not metadata.get("name"):
                         failed += 1
-                        errors.append(f"meta_caller returned None for {rel_file_path}")
+                        reason = (
+                            metadata.get("error")
+                            if isinstance(metadata, dict)
+                            else f"meta_caller returned {type(metadata).__name__}"
+                        )
+                        errors.append(f"Could not generate metadata for {rel_file_path}: {reason}")
                         continue
 
                     # Canonical writer.
@@ -270,7 +270,14 @@ def refresh_registry():
                     rel_meta_path = rel_meta_path.replace("\\", "/")
 
                     key = rel_meta_path
-                    global_metadata[key] = meta_data
+                    if isinstance(meta_data, dict):
+                        source_path = meta_data.get("path") or rel_meta_path
+                        global_metadata[key] = sanitize_module_metadata(
+                            meta_data,
+                            path=source_path,
+                        )
+                    else:
+                        continue
 
                 except Exception:
                     continue

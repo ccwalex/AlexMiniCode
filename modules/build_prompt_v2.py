@@ -1,3 +1,5 @@
+import os
+
 from read_file import read_file
 from scratchpad import get_scratchpad_endpoint_doc, render_scratchpad_block
 from conflict import get_conflict_endpoint_doc
@@ -50,6 +52,34 @@ def build_prompt_v2(
 
     principles = safe_read("agent_memory/core/principles.md")
     memory = safe_read("agent_memory/reasoning/llm_memory.json")
+    subagent_doc = ""
+    try:
+        subagent_depth = max(0, int(os.environ.get("AGENT_SUBAGENT_DEPTH", "0") or 0))
+    except Exception:
+        subagent_depth = 0
+    if subagent_depth == 0:
+        subagent_doc = """
+5. /subagent
+
+Use to delegate one self-contained task and block until its concise result returns.
+
+Payload:
+{
+  "task": "specific task and expected deliverable",
+  "role": "explore|review|implement",
+  "mode": "process|readonly",
+  "files": ["optional/project-relative/path.py"],
+  "timeout_seconds": 600
+}
+
+Rules:
+- /subagent must be the final call in the planner turn.
+- Delegate sequentially: one subagent task per planner turn.
+- Use process mode for implementation or work requiring tools.
+- Use readonly mode only for fast explore/review tasks over the supplied files.
+- The parent receives only a bounded summary, status, and changed artifact paths.
+- Subagent scratchpads, reads, logs, and planner traces are not added to parent context.
+"""
 
     system_prompt = f"""
 {SYSTEM_PROMPT_OVERRIDE_BLOCK}
@@ -173,7 +203,9 @@ Rules:
 - Shell inspection commands such as ls, cat, head, tail, grep, find, wc may be used to inspect.
 - If shell inspection output is needed before deciding next steps, /request_feedback should usually be the final call in the same planner turn.
 
-5. /request_feedback
+{subagent_doc}
+
+6. /request_feedback
 
 Use to ask backend to return successful read/inspection outputs for the next planner turn.
 
@@ -191,7 +223,7 @@ Rules:
 - Validation rejection is handled by local repair.
 - Execution failure goes to debug planning.
 
-6. /done
+7. /done
 
 Use when the task is complete.
 
@@ -199,7 +231,7 @@ Payload:
 {{
   "summary": "brief summary"
 }}
-7. /write_llm_memory
+8. /write_llm_memory
 
 Use only when a reusable lesson, bug pattern, or workaround was discovered.
 Do not store raw logs.
