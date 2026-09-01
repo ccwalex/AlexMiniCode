@@ -10,7 +10,7 @@ MODULE_METADATA = {
             "name": "render_read_cache",
             "inputs": {
                 "read_cache": "dict mapping file paths to cached file content",
-                "max_chars_per_file": "int maximum displayed characters per file before truncation, default 30000"
+                "max_chars_per_file": "int optional maximum characters per file before truncation; omitted means no limit"
             },
             "outputs": "str containing rendered attached_file blocks for prompt injection"
         }
@@ -18,19 +18,18 @@ MODULE_METADATA = {
 }
 
 
-def render_read_cache(read_cache, max_chars_per_file=30000):
+def render_read_cache(read_cache, max_chars_per_file=None):
     parts = []
 
     for path, content in read_cache.items():
         content_str = str(content)
         sha = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
-        if len(content_str) > max_chars_per_file:
+        displayed = content_str
+        truncated_note = ""
+        if max_chars_per_file is not None and max_chars_per_file > 0 and len(content_str) > max_chars_per_file:
             displayed = content_str[:max_chars_per_file]
             truncated_note = f"\n\n[TRUNCATED: original length {len(content_str)} chars]"
-        else:
-            displayed = content_str
-            truncated_note = ""
 
         parts.append(
             f'\n<attached_file path="{path}" sha256="{sha}">\n'

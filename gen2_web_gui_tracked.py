@@ -333,7 +333,7 @@ def file_tree(path='.', include_agent=False, include_agent_memory=False):
         'include_agent_memory': bool(include_agent_memory),
         },
     }
-def read_context_file(path, index, n=30000):
+def read_context_file(path, index):
     """
     Render one file as prompt context.
 
@@ -365,9 +365,6 @@ def read_context_file(path, index, n=30000):
             )
 
         txt = p.read_text(encoding="utf-8", errors="replace")
-
-        if len(txt) > n:
-            txt = txt[:n] + "\n[TRUNCATED]"
 
         parts = [
             f'<{tag} path="{path}">',
@@ -455,7 +452,7 @@ def final_task(prompt, files, groups):
     if files:
         parts.append("<file_context>")
         for i, path in enumerate(files, start=1):
-            parts.append(read_context_file(path, index=i, n=30000))
+            parts.append(read_context_file(path, index=i))
         parts.append("</file_context>")
 
     return "\n\n".join(parts)

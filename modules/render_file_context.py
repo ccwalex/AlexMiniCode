@@ -8,8 +8,7 @@ MODULE_METADATA = {
             "inputs": {
                 "read_cache": "dict mapping project-relative file paths to file content",
                 "code_tables": "dict or None mapping paths to optional code table text",
-                "path_order": "list or None preferred path ordering before remaining cache keys",
-                "max_chars_per_file": "int maximum characters per file before truncation"
+                "path_order": "list or None preferred path ordering before remaining cache keys"
             },
             "outputs": "str <file_context> block or empty string when no files"
         }
@@ -19,7 +18,6 @@ MODULE_METADATA = {
 import json
 
 from build_block_table import build_block_table
-from cfg import CFG
 from infer_code_type import infer_code_type
 
 
@@ -55,16 +53,13 @@ def render_file_context(
     if not read_cache:
         return ""
 
-    if max_chars_per_file is None:
-        max_chars_per_file = int(getattr(CFG, "LLM_CONTEXT_MAX_CHARS_PER_FILE", 60000))
-
     code_tables = code_tables or {}
     parts = ["<file_context>"]
 
     for index, path in enumerate(_ordered_paths(read_cache, path_order), start=1):
         text = str(read_cache.get(path, ""))
 
-        if len(text) > max_chars_per_file:
+        if max_chars_per_file is not None and max_chars_per_file > 0 and len(text) > max_chars_per_file:
             text = text[:max_chars_per_file] + "\n[TRUNCATED]"
 
         tag = f"file_{index}"
