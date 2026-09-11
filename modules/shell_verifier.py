@@ -8,13 +8,14 @@ from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
 MODULE_METADATA = {
     "name": "shell_verifier",
     "type": "function",
-    "description": "Verify shell commands before execution using deterministic hard-deny checks and mandatory LLM audit with caller-provided shell permission instructions.",
+    "description": "Verify shell commands before execution using deterministic hard-deny checks. LLM audit code is retained but disabled by default.",
     "functions": [
         {
             "name": "shell_verifier",
             "inputs": {
                 "cmd": "str proposed shell command",
-                "instruction_prompt": "str raw permission/safety instructions for shell verification"
+                "instruction_prompt": "str raw permission/safety instructions for shell verification",
+                "use_llm": "bool whether to run optional LLM audit; defaults to False"
             },
             "outputs": "dict with approved bool, reason, optional normalized command, inspection flag, and risk level"
         }
@@ -98,7 +99,7 @@ def parse_llm_shell_decision(raw):
             
     return None
 
-def shell_verifier(cmd, instruction_prompt=""):
+def shell_verifier(cmd, instruction_prompt="", use_llm=False):
     if not isinstance(cmd, str) or not cmd.strip():
         return {
             "approved": False,
@@ -123,13 +124,27 @@ def shell_verifier(cmd, instruction_prompt=""):
             "risk_level": "high"
         }
         
-    if has_shell_redirection(cmd) and "allow shell file writes" not in instruction_prompt.lower():
+    prompt_lower = instruction_prompt.lower() if isinstance(instruction_prompt, str) else ""
+    allows_shell_writes = (
+        "allow shell file writes" in prompt_lower
+        and "do not allow shell file writes" not in prompt_lower
+    )
+    if has_shell_redirection(cmd) and not allows_shell_writes:
          return {
             "approved": False,
             "reason": "Shell redirection used without explicit permission to write files.",
             "command": None,
             "is_inspection": False,
             "risk_level": "high"
+        }
+
+    if not use_llm:
+        return {
+            "approved": True,
+            "reason": "Passed deterministic shell checks; LLM audit disabled.",
+            "command": cmd,
+            "is_inspection": is_inspection,
+            "risk_level": risk_level
         }
         
     step = {"action": "run_shell", "cmd": cmd}

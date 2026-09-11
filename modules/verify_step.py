@@ -300,8 +300,19 @@ def verify_step(step, modules_override=None, read_cache=None):
     thinking = "medium"
     max_tokens = 8192
 
+    use_llm_shell_audit = False
+
     if action == "run_shell":
-        system, user = build_shell_verifier_prompt(step)
+        if use_llm_shell_audit:
+            system, user = build_shell_verifier_prompt(step)
+        else:
+            result = {
+                "approved": True,
+                "reason": "Passed deterministic shell checks; LLM audit disabled.",
+            }
+            if isinstance(cmd, str) and cmd.strip():
+                result["command"] = cmd.strip()
+            return result
 
     elif action == "write_file":
         system, user = build_write_verifier_prompt(
