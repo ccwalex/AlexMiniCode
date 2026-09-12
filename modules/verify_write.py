@@ -5,7 +5,6 @@ import json
 from build_write_verifier_prompt import build_write_verifier_prompt
 from call_llm import call_llm_role
 from structured_llm_retry import call_llm_role_with_parse_retry, is_valid_verifier_response
-from clean_python_content import clean_python_content
 from extract_module_metadata_from_content import extract_module_metadata_from_content
 from validate_module_metadata import validate_module_metadata
 from validate_metadata_matches_code import validate_metadata_matches_code
@@ -25,7 +24,7 @@ MODULE_METADATA = {
                 "read_cache": "dict or None cached read files",
                 "use_llm": "bool whether to run optional LLM verifier"
             },
-            "outputs": "dict with approved bool, reason, cleaned content, content_hash, and optional metadata"
+                "outputs": "dict with approved bool, reason, content, content_hash, and optional metadata"
         }
     ]
 }
@@ -50,10 +49,7 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
         }
     
     is_python = path.endswith(".py")
-    
-    if is_python:
-        content = clean_python_content(content)
-        
+
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     
     metadata = None

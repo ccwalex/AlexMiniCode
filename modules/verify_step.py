@@ -1,6 +1,5 @@
 import json
 
-from clean_python_content import clean_python_content
 from extract_module_metadata_from_content import extract_module_metadata_from_content
 from validate_module_metadata import validate_module_metadata
 from validate_metadata_matches_code import validate_metadata_matches_code
@@ -193,10 +192,6 @@ def verify_step(step, modules_override=None, read_cache=None):
                 "approved": False,
                 "reason": "write_file missing content"
             }
-
-        if path.endswith(".py"):
-            content = clean_python_content(content)
-            step["content"] = content
 
     elif action == "run_shell":
         if not cmd:

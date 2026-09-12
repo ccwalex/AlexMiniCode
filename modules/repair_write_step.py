@@ -2,7 +2,6 @@ import json
 
 from read_file import read_file
 from call_planner import call_planner
-from clean_python_content import clean_python_content
 
 
 MODULE_METADATA = {
@@ -157,8 +156,6 @@ Return ONLY:
             "success": False,
             "reason": "repair model content is not a string",
         }
-    
-    #repaired_content = clean_python_content(repaired_content).strip()
 
     if not repaired_content:
         return {
