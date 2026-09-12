@@ -68,14 +68,17 @@ endpoint table injected to prompt
 | write complete file | /write | {"path": str, "content": str} |
 | edit existing file | /edit | {"df": str, "commands": list[str]} |
 | run shell | /shell | {"cmd": str} |
-| delegate sequential task | /subagent | {"task": str, "role": "explore\|review\|implement", "mode": "process\|readonly", "files": list[str], "timeout_seconds": int} |
+| delegate task | /subagent | {"task": str, "role": "explore\|review\|implement", "mode": "process\|readonly", "files": list[str], "timeout_seconds": int} |
 | request feedback | /request_feedback | {} |
 | finish | /done | {"summary": str} |
 
-`/subagent` must be the final call in a planner turn. Process mode launches an
-isolated blocking worker and is required for implementation. Readonly mode is a
-single in-process LLM call for bounded exploration or review. Only the child
-summary, status, and changed artifact paths return to the main planner.
+`/subagent` calls must form a trailing batch in a planner turn (optional
+`/request_feedback` after them). Process mode launches an isolated blocking
+worker and is required for implementation. Readonly mode is a single
+in-process LLM call for bounded exploration or review. The backend runs a
+readonly-only batch in parallel and any mixed/process batch sequentially.
+Only the child summary, status, and changed artifact paths return to the
+main planner.
 
 
 Gen 2 structured edit uses a parser-generated flat block table.

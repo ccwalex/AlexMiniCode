@@ -61,7 +61,7 @@ def build_prompt_v2(
         subagent_doc = """
 5. /subagent
 
-Use to delegate one self-contained task and block until its concise result returns.
+Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
 
 Payload:
 {
@@ -73,8 +73,8 @@ Payload:
 }
 
 Rules:
-- /subagent must be the final call in the planner turn.
-- Delegate sequentially: one subagent task per planner turn.
+- You may emit multiple /subagent calls in one planner turn as a trailing batch.
+- Only optional /request_feedback may follow /subagent calls in the same turn.
 - Use process mode for implementation or work requiring tools.
 - Use readonly mode only for fast explore/review tasks over the supplied files.
 - The parent receives only a bounded summary, status, and changed artifact paths.

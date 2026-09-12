@@ -9,7 +9,7 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 - **Planner–executor loop** — The main planner emits structured API calls (`/read`, `/write`, `/edit`, `/shell`, `/subagent`, `/request_feedback`, `/done`) that the backend executes in order.
 - **Structured code editing** — Parser-generated block tables for Python, TypeScript/Node, React TSX, and HTML. The model selects block IDs; the backend applies edits using deterministic line spans.
 - **Module metadata registry** — Tracked folders expose `MODULE_METADATA` summaries so the planner can discover available functions without reading every file.
-- **Sequential subagent delegation** — Delegate bounded tasks to explore, review, or implement roles in isolated workers. Only summaries and changed artifact paths return to the main planner.
+- **Subagent delegation** — Delegate bounded tasks to explore, review, or implement roles in isolated workers. Only summaries and changed artifact paths return to the main planner. Several `/subagent` calls may appear in one turn; the backend runs them in parallel only when every call is readonly, otherwise sequentially.
 - **Web GUI and job queue** — Submit tasks through a browser UI or JSON API. Jobs run one at a time through a sequential queue with logs and status polling.
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
 - **Dual LLM backends** — Relay server (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
@@ -160,7 +160,7 @@ Each planner turn produces a JSON array of API calls. The executor runs them seq
 | Request feedback | `/request_feedback` | `{}` |
 | Finish | `/done` | `{"summary": str}` |
 
-`/subagent` must be the final call in a planner turn. Process mode launches an isolated blocking worker; readonly mode is a single in-process LLM call for bounded exploration or review.
+`/subagent` calls must form a trailing batch in a planner turn (optional `/request_feedback` after them). Process mode launches an isolated blocking worker; readonly mode is a single in-process LLM call for bounded exploration or review. Multiple readonly `/subagent` calls in the same batch run concurrently; any process-mode call makes the whole batch sequential.
 
 ## Configuration
 

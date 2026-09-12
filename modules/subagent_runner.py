@@ -10,6 +10,8 @@ import sys
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 
 from call_llm import call_llm_role
@@ -33,6 +35,13 @@ MODULE_METADATA = {
                 "timeout_seconds": "int blocking timeout",
             },
             "outputs": "summary-only dict; child planner state and file cache are never returned",
+        },
+        {
+            "name": "run_readonly_subagents_parallel",
+            "inputs": {
+                "specs": "list of dicts with task, role, files, timeout_seconds"
+            },
+            "outputs": "list of summary-only dicts in spec order",
         }
     ],
 }
@@ -431,3 +440,48 @@ def run_subagent(task, role="explore", mode="process", files=None, timeout_secon
     if mode == "readonly":
         return _run_readonly(task, role, files, timeout_seconds)
     return _run_process(task, role, files, timeout_seconds)
+
+
+def run_readonly_subagents_parallel(specs):
+    """Run readonly subagents concurrently without SIGALRM; preserve spec order."""
+    items = list(specs or [])
+    if not items:
+        return []
+
+    ctx = copy_context()
+
+    def run_one(spec):
+        spec = spec if isinstance(spec, dict) else {}
+        return run_subagent(
+            task=spec.get("task"),
+            role=spec.get("role", "explore"),
+            mode="readonly",
+            files=spec.get("files", []),
+            timeout_seconds=spec.get("timeout_seconds", 600),
+        )
+
+    if len(items) == 1:
+        return [ctx.run(run_one, items[0])]
+
+    results = [None] * len(items)
+    workers = min(8, len(items))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(ctx.run, run_one, spec) for spec in items]
+        for index, (spec, future) in enumerate(zip(items, futures)):
+            try:
+                timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or 600), 3600))
+            except Exception:
+                timeout_seconds = 600
+            role = str((spec or {}).get("role") or "explore").strip().lower()
+            try:
+                results[index] = future.result(timeout=timeout_seconds + 5)
+            except Exception as exc:
+                results[index] = _summary_result(
+                    success=False,
+                    role=role,
+                    mode="readonly",
+                    status="failed",
+                    summary="",
+                    error=f"read-only subagent failed: {exc}",
+                )
+    return results

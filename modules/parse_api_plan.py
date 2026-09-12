@@ -30,6 +30,8 @@ ALLOWED_URLS = {
     "/conflict",
 }
 
+MAX_SUBAGENT_BATCH = 8
+
 
 def strip_code_fences(text):
     text = str(text).strip()
@@ -219,11 +221,30 @@ def normalize_candidate(candidate):
     for i, call in enumerate(candidate):
         calls.append(validate_call(call, i))
 
-    for i, call in enumerate(calls[:-1]):
-        if call.get("url") == "/subagent":
-            raise ValueError(f"call {i} /subagent must be the final call in a planner turn")
+    _validate_subagent_batch(calls)
 
     return calls
+
+
+def _validate_subagent_batch(calls):
+    indices = [i for i, call in enumerate(calls) if call.get("url") == "/subagent"]
+    if not indices:
+        return
+    if len(indices) > MAX_SUBAGENT_BATCH:
+        raise ValueError(
+            f"planner turn may include at most {MAX_SUBAGENT_BATCH} /subagent calls"
+        )
+    first, last = indices[0], indices[-1]
+    expected = list(range(first, last + 1))
+    if indices != expected:
+        raise ValueError("/subagent calls must be a contiguous trailing batch")
+    for i in range(last + 1, len(calls)):
+        url = calls[i].get("url")
+        if url != "/request_feedback":
+            raise ValueError(
+                f"call {last} /subagent cannot be followed by {url}; "
+                "only optional /request_feedback may follow a /subagent batch"
+            )
 
 
 def validate_call(call, index):

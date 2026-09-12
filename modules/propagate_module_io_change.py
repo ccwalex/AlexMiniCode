@@ -1,0 +1,201 @@
+MODULE_METADATA = {
+    "name": "propagate_module_io_change",
+    "type": "function",
+    "description": "After a tracked module's public output format changes, grep dependents and update them with implement subagents.",
+    "functions": [
+        {
+            "name": "propagate_module_io_change",
+            "inputs": {
+                "path": "str changed file path",
+                "pre_content": "str or None source before the change",
+                "post_content": "str or None source after the change",
+            },
+            "outputs": "dict summarizing cascade actions",
+        }
+    ],
+}
+
+import json
+import os
+import subprocess
+
+from extract_public_contract import extract_public_contract, output_format_changed
+from find_module_dependents import find_module_dependents
+from infer_code_type import infer_code_type
+from is_tracked import is_tracked
+from read_file import read_file
+from refresh_after_file_change import refresh_after_file_change
+from subagent_runner import run_subagent
+
+
+MAX_DEPTH = 3
+MAX_IMPLEMENT = 8
+
+
+def _subagent_depth():
+    try:
+        return max(0, int(os.environ.get("AGENT_SUBAGENT_DEPTH", "0") or 0))
+    except Exception:
+        return 0
+
+
+def _read(path):
+    ok, content = read_file(path)
+    return content if ok else None
+
+
+def _llm_output_changed(path, pre_content, post_content):
+    task = (
+        "Did the public output or export format of this module change?\n"
+        "Answer YES or NO on the first line, then a one-sentence reason.\n\n"
+        f"<path>{path}</path>\n"
+        f"<before>\n{(pre_content or '')[:12000]}\n</before>\n"
+        f"<after>\n{(post_content or '')[:12000]}\n</after>"
+    )
+    result = run_subagent(task, role="review", mode="readonly", files=[path], timeout_seconds=180)
+    summary = str((result or {}).get("summary") or "").strip()
+    first = summary.splitlines()[0].strip().upper() if summary else ""
+    changed = first.startswith("YES")
+    return changed, summary, result
+
+
+def _update_dependent(changed_path, dependent, before_contract, after_contract, verdict):
+    contract_text = json.dumps(
+        {
+            "changed_path": changed_path,
+            "before_outputs": (before_contract or {}).get("outputs"),
+            "after_outputs": (after_contract or {}).get("outputs"),
+            "verdict": verdict,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    task = (
+        f"Update {dependent} so it matches the new public output/export format of {changed_path}.\n"
+        "Change only call sites and types that depend on the old output format.\n"
+        f"<io_change>\n{contract_text}\n</io_change>"
+    )
+    return run_subagent(
+        task,
+        role="implement",
+        mode="process",
+        files=[dependent, changed_path],
+        timeout_seconds=600,
+    )
+
+
+def propagate_module_io_change(
+    path,
+    pre_content=None,
+    post_content=None,
+    *,
+    depth=0,
+    visited=None,
+    implement_count=0,
+    run_state=None,
+):
+    summary = {
+        "path": path,
+        "tracked": False,
+        "changed": False,
+        "grepped": False,
+        "dependents": [],
+        "updates": [],
+        "reason": "",
+        "implement_count": implement_count,
+    }
+    if _subagent_depth() >= 1:
+        summary["reason"] = "skipped inside nested subagent"
+        return summary
+    if not path or not isinstance(path, str):
+        summary["reason"] = "invalid path"
+        return summary
+    if not is_tracked(path):
+        summary["reason"] = "untracked"
+        return summary
+    summary["tracked"] = True
+
+    visited = set(visited or [])
+    if path in visited:
+        summary["reason"] = "already visited"
+        return summary
+    if depth > MAX_DEPTH:
+        summary["reason"] = "max cascade depth"
+        return summary
+    visited.add(path)
+
+    if post_content is None:
+        post_content = _read(path)
+    code_type = infer_code_type(path, post_content or pre_content or "")
+    before_contract = extract_public_contract(path, pre_content or "", code_type)
+    after_contract = extract_public_contract(path, post_content or "", code_type)
+    changed, reason, needs_llm = output_format_changed(before_contract, after_contract)
+    verdict = reason
+    if needs_llm:
+        changed, verdict, _llm = _llm_output_changed(path, pre_content, post_content)
+        reason = "llm review: " + str(verdict)[:300]
+    summary["changed"] = bool(changed)
+    summary["reason"] = reason
+    if not changed:
+        return summary
+
+    dependents = find_module_dependents(path)
+    summary["grepped"] = True
+    summary["dependents"] = list(dependents)
+    for dependent in dependents:
+        if dependent in visited:
+            continue
+        if implement_count >= MAX_IMPLEMENT:
+            summary["updates"].append({"path": dependent, "skipped": "max implement calls"})
+            break
+        pre_dep = _read(dependent)
+        child = _update_dependent(path, dependent, before_contract, after_contract, verdict)
+        implement_count += 1
+        summary["implement_count"] = implement_count
+        update = {
+            "path": dependent,
+            "success": bool((child or {}).get("success")),
+            "summary": str((child or {}).get("summary") or "")[:500],
+            "error": str((child or {}).get("error") or "")[:300],
+        }
+        summary["updates"].append(update)
+        if not update["success"]:
+            continue
+        refresh_after_file_change(dependent, run_state=run_state)
+        nested = propagate_module_io_change(
+            dependent,
+            pre_content=pre_dep,
+            post_content=_read(dependent),
+            depth=depth + 1,
+            visited=visited,
+            implement_count=implement_count,
+            run_state=run_state,
+        )
+        implement_count = int(nested.get("implement_count") or implement_count)
+        summary["implement_count"] = implement_count
+        summary["updates"].extend(nested.get("updates") or [])
+        if nested.get("dependents"):
+            summary["dependents"].extend(
+                item for item in nested["dependents"] if item not in summary["dependents"]
+            )
+    return summary
+
+
+def snapshot_pre_content(path, read_cache=None):
+    if isinstance(read_cache, dict) and path in read_cache:
+        return read_cache.get(path)
+    content = _read(path)
+    if content is not None:
+        return content
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"HEAD:{path}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            return proc.stdout
+    except Exception:
+        pass
+    return None

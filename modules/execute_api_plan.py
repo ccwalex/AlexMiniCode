@@ -21,6 +21,7 @@ MODULE_METADATA = {
 
 from execute_api_call import execute_api_call
 from run_state import RunState
+from subagent_runner import run_readonly_subagents_parallel
 
 
 VALID_STATUSES = {
@@ -29,6 +30,53 @@ VALID_STATUSES = {
     "done",
     "failed",
 }
+
+
+def _subagent_mode(call):
+    payload = call.get("payload") if isinstance(call, dict) else {}
+    if not isinstance(payload, dict):
+        return "process"
+    return str(payload.get("mode") or "process").strip().lower()
+
+
+def _consecutive_subagent_calls(calls, start):
+    run = []
+    index = start
+    while index < len(calls):
+        call = calls[index]
+        if not isinstance(call, dict) or call.get("url") != "/subagent":
+            break
+        run.append(call)
+        index += 1
+    return run
+
+
+def _wrap_subagent_plan_result(call, subagent_result):
+    payload = call.get("payload") if isinstance(call, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "success": True,
+        "url": "/subagent",
+        "payload": payload,
+        "output": {"subagent_result": subagent_result},
+        "error": None,
+        "done": False,
+        "conflict": False,
+        "request_feedback": True,
+    }
+
+
+def _record_plan_result(run_state, call, result):
+    if hasattr(run_state, "add_call"):
+        try:
+            run_state.add_call(
+                call,
+                status="success" if result.get("success") else "failed",
+                output=result,
+            )
+        except Exception:
+            pass
 
 
 def execute_api_plan(
@@ -70,40 +118,55 @@ def execute_api_plan(
         read_cache = {}
 
     results = []
+    index = 0
 
-    for index, call in enumerate(calls):
-        try:
-            result = execute_api_call(
-                call=call,
-                run_state=run_state,
-                read_cache=read_cache,
-                shell_instruction_prompt=shell_instruction_prompt,
-                scratchpad=scratchpad,
-                mark_task_done=mark_task_done,
-            )
-        except Exception as e:
-            result = {
-                "success": False,
-                "url": call.get("url") if isinstance(call, dict) else None,
-                "payload": call.get("payload", {}) if isinstance(call, dict) else {},
-                "output": None,
-                "error": f"execute_api_call raised exception: {str(e)}",
-                "done": False,
-                "conflict": False,
-                "request_feedback": False,
-            }
+    while index < len(calls):
+        call = calls[index]
+        batch = (
+            _consecutive_subagent_calls(calls, index)
+            if isinstance(call, dict) and call.get("url") == "/subagent"
+            else []
+        )
+        batch_results = None
+        if len(batch) >= 2 and all(_subagent_mode(item) == "readonly" for item in batch):
+            specs = [item.get("payload") or {} for item in batch]
+            child_results = run_readonly_subagents_parallel(specs)
+            batch_results = [
+                _wrap_subagent_plan_result(item, child)
+                for item, child in zip(batch, child_results)
+            ]
 
-        results.append(result)
-
-        if hasattr(run_state, "add_call"):
+        if batch_results is not None:
+            for item, result in zip(batch, batch_results):
+                results.append(result)
+                _record_plan_result(run_state, item, result)
+            index += len(batch) - 1
+            call = batch[-1]
+            result = batch_results[-1]
+        else:
             try:
-                run_state.add_call(
-                    call,
-                    status="success" if result.get("success") else "failed",
-                    output=result,
+                result = execute_api_call(
+                    call=call,
+                    run_state=run_state,
+                    read_cache=read_cache,
+                    shell_instruction_prompt=shell_instruction_prompt,
+                    scratchpad=scratchpad,
+                    mark_task_done=mark_task_done,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                result = {
+                    "success": False,
+                    "url": call.get("url") if isinstance(call, dict) else None,
+                    "payload": call.get("payload", {}) if isinstance(call, dict) else {},
+                    "output": None,
+                    "error": f"execute_api_call raised exception: {str(e)}",
+                    "done": False,
+                    "conflict": False,
+                    "request_feedback": False,
+                }
+
+            results.append(result)
+            _record_plan_result(run_state, call, result)
 
         if not result.get("success"):
             if hasattr(run_state, "add_error"):
@@ -139,8 +202,13 @@ def execute_api_plan(
             next_url = next_call.get("url") if isinstance(next_call, dict) else None
 
             # Batch consecutive reads before returning their merged file_context.
-            # The explicit /request_feedback endpoint may follow the final read.
+            # Consecutive /subagent calls also complete before feedback returns.
+            # The explicit /request_feedback endpoint may follow the final read or subagent.
             if current_url == "/read" and next_url in {"/read", "/request_feedback"}:
+                index += 1
+                continue
+            if current_url == "/subagent" and next_url in {"/subagent", "/request_feedback"}:
+                index += 1
                 continue
 
             feedback = None
@@ -206,6 +274,8 @@ def execute_api_plan(
                 "conflict": False,
                 "error": None,
             }
+
+        index += 1
 
     return {
         "success": True,

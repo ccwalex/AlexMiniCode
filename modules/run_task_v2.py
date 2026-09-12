@@ -38,7 +38,7 @@ from extract_task_context import (
     extract_module_registry_block,
     task_without_attached_context,
 )
-from render_file_context import render_file_context
+from render_file_context import refresh_read_cache, render_file_context
 from plugins.background_context_plugin import rewrite_task
 from scratchpad import Scratchpad
 from run_state import RunState
@@ -460,6 +460,9 @@ def _run_task_v2(
         iteration += 1
 
         print(f"\n[Gen2 Iteration {iteration}]")
+
+        if iteration > 1:
+            refresh_read_cache(read_cache)
 
         try:
             merged_file_context = render_file_context(

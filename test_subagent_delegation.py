@@ -50,7 +50,7 @@ class SubagentDelegationTests(unittest.TestCase):
             ]
         )
         self.assertFalse(nonfinal["success"])
-        self.assertIn("final call", nonfinal["error"])
+        self.assertIn("/subagent cannot be followed", nonfinal["error"])
 
         mutating = parse_api_plan(
             [
@@ -77,7 +77,9 @@ class SubagentDelegationTests(unittest.TestCase):
             "artifacts": ["agent/changed.py"],
             "error": "child task failed",
         }
-        with patch.object(api_module, "run_subagent", return_value=child):
+        with patch.object(api_module, "run_subagent", return_value=child), patch.object(
+            api_module, "propagate_module_io_change", return_value={"changed": False}
+        ):
             read_cache = {"agent/changed.py": "stale", "agent/other.py": "keep"}
             result = api_module.execute_api_call(
                 {
@@ -89,8 +91,8 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertTrue(result["request_feedback"])
         self.assertEqual(result["output"]["subagent_result"], child)
-        self.assertNotIn("agent/changed.py", read_cache)
-        self.assertNotIn("agent/other.py", read_cache)
+        self.assertEqual(read_cache["agent/changed.py"], "stale")
+        self.assertEqual(read_cache["agent/other.py"], "keep")
 
     def test_parent_feedback_is_summary_only_and_bounded(self):
         execution = {
@@ -364,6 +366,88 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("Found the relevant call site", prompts[1])
         self.assertNotIn("read_cache", prompts[1])
         self.assertNotIn("run_state", prompts[1])
+
+    def test_parser_accepts_trailing_readonly_batch(self):
+        parsed = parse_api_plan(
+            [
+                {"url": "/subagent", "payload": {"task": "one", "mode": "readonly"}},
+                {"url": "/subagent", "payload": {"task": "two", "mode": "readonly", "role": "review"}},
+            ]
+        )
+        self.assertTrue(parsed["success"], parsed)
+        self.assertEqual(len(parsed["calls"]), 2)
+
+    def test_parser_rejects_noncontiguous_or_oversized_subagent_batch(self):
+        split = parse_api_plan(
+            [
+                {"url": "/subagent", "payload": {"task": "one"}},
+                {"url": "/read", "payload": {"path": "a.py"}},
+                {"url": "/subagent", "payload": {"task": "two"}},
+            ]
+        )
+        self.assertFalse(split["success"])
+        too_many = parse_api_plan(
+            [{"url": "/subagent", "payload": {"task": f"t{i}"}} for i in range(9)]
+        )
+        self.assertFalse(too_many["success"])
+        self.assertIn("at most", too_many["error"])
+
+    def test_execute_plan_runs_readonly_batch_in_parallel_helper(self):
+        import modules.execute_api_plan as plan_module
+
+        calls = [
+            {"url": "/subagent", "payload": {"task": "one", "role": "explore", "mode": "readonly"}},
+            {"url": "/subagent", "payload": {"task": "two", "role": "review", "mode": "readonly"}},
+        ]
+        child = {
+            "success": True,
+            "status": "completed",
+            "role": "explore",
+            "mode": "readonly",
+            "summary": "ok",
+            "artifacts": [],
+        }
+        with patch.object(
+            plan_module, "run_readonly_subagents_parallel", return_value=[child, dict(child, role="review")]
+        ) as parallel, patch.object(plan_module, "execute_api_call") as sequential:
+            result = plan_module.execute_api_plan(calls)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["status"], "request_feedback")
+        self.assertEqual(len(result["results"]), 2)
+        parallel.assert_called_once()
+        sequential.assert_not_called()
+
+    def test_execute_plan_runs_mixed_batch_sequentially(self):
+        import modules.execute_api_plan as plan_module
+
+        calls = [
+            {"url": "/subagent", "payload": {"task": "impl", "role": "implement", "mode": "process"}},
+            {"url": "/subagent", "payload": {"task": "rev", "role": "review", "mode": "readonly"}},
+        ]
+        seen = []
+
+        def fake_execute(call, **kwargs):
+            seen.append(call["payload"]["task"])
+            return {
+                "success": True,
+                "url": "/subagent",
+                "payload": call["payload"],
+                "output": {"subagent_result": {"success": True, "summary": call["payload"]["task"]}},
+                "request_feedback": True,
+                "done": False,
+                "conflict": False,
+                "error": None,
+            }
+
+        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute) as sequential, patch.object(
+            plan_module, "run_readonly_subagents_parallel"
+        ) as parallel:
+            result = plan_module.execute_api_plan(calls)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(seen, ["impl", "rev"])
+        self.assertEqual(len(result["results"]), 2)
+        sequential.assert_called()
+        parallel.assert_not_called()
 
 
 if __name__ == "__main__":

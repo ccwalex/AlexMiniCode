@@ -12,6 +12,7 @@ from repair_write_step import repair_write_step
 from scratchpad import execute_scratchpad
 from conflict import execute_conflict
 from subagent_runner import run_subagent
+from propagate_module_io_change import propagate_module_io_change, snapshot_pre_content
 
 MODULE_METADATA = {
     "name": "execute_api_call",
@@ -267,6 +268,8 @@ def execute_api_call(
                 result["error"] = "Missing path or content in /write payload"
                 return result
 
+            pre_content = snapshot_pre_content(path, read_cache)
+
             v_res = verify_write(path, content, use_llm=True)
 
             _record_verifier_decision(run_state, "write", path, v_res)
@@ -355,11 +358,18 @@ def execute_api_call(
                 path,
                 run_state=run_state,
             )
+            cascade = propagate_module_io_change(
+                path,
+                pre_content=pre_content,
+                post_content=verified_content,
+                run_state=run_state,
+            )
 
             result["success"] = True
             result["output"] = {
                 "write": w_msg,
                 "refresh": refresh_res,
+                "dependency_cascade": cascade,
             }
             return result
         if url == "/write_llm_memory":
@@ -396,6 +406,8 @@ def execute_api_call(
             if not path or not edit_fns:
                 result["error"] = "Missing path or edit_fn/edit_fns in /edit payload"
                 return result
+
+            pre_content = snapshot_pre_content(path, read_cache)
 
             try:
                 edit_res = edit_file(path, edit_fns)
@@ -463,11 +475,21 @@ def execute_api_call(
                 path,
                 run_state=run_state,
             )
+            post_content = edit_res.get("reconstructed_source")
+            if post_content is None:
+                post_content = read_cache.get(path)
+            cascade = propagate_module_io_change(
+                path,
+                pre_content=pre_content,
+                post_content=post_content,
+                run_state=run_state,
+            )
 
             result["success"] = True
             result["output"] = {
                 "edit": edit_res,
                 "refresh": refresh_res,
+                "dependency_cascade": cascade,
             }
             return result
 
@@ -521,6 +543,7 @@ def execute_api_call(
             return result
 
         if url == "/subagent":
+            pre_cache = dict(read_cache) if isinstance(read_cache, dict) else {}
             subagent_result = run_subagent(
                 task=payload.get("task"),
                 role=payload.get("role", "explore"),
@@ -528,18 +551,32 @@ def execute_api_call(
                 files=payload.get("files", []),
                 timeout_seconds=payload.get("timeout_seconds", 600),
             )
+            cascades = []
             if payload.get("mode", "process") == "process":
-                # A process subagent may mutate through shell commands or stop
-                # after a partial write, neither of which guarantees complete
-                # artifact reporting. Conservatively discard all cached files.
-                read_cache.clear()
+                for artifact in list(subagent_result.get("artifacts") or []):
+                    art = str(artifact or "").strip()
+                    if not art:
+                        continue
+                    pre_content = pre_cache.get(art) or snapshot_pre_content(art, pre_cache)
+                    post_content = None
+                    read_success, content_or_error = read_file(art)
+                    if read_success:
+                        post_content = content_or_error
+                    refresh_after_file_change(art, run_state=run_state)
+                    cascades.append(
+                        propagate_module_io_change(
+                            art,
+                            pre_content=pre_content,
+                            post_content=post_content,
+                            run_state=run_state,
+                        )
+                    )
 
-            # A completed delegation call is execution-successful even when the
-            # child reports task failure. The parent planner must receive that
-            # structured result and decide how to continue; debug repair is for
-            # broken API execution, not unsuccessful delegated work.
             result["success"] = True
-            result["output"] = {"subagent_result": subagent_result}
+            result["output"] = {
+                "subagent_result": subagent_result,
+                "dependency_cascade": cascades,
+            }
             result["request_feedback"] = True
             return result
 
@@ -656,6 +693,8 @@ if __name__ == "__main__":
     }
     sys.modules[__name__].run_shell = lambda c, r: (True, "shell output")
     sys.modules[__name__].refresh_after_file_change = lambda p, run_state=None: {"success": True}
+    sys.modules[__name__].propagate_module_io_change = lambda *a, **k: {"changed": False}
+    sys.modules[__name__].snapshot_pre_content = lambda *a, **k: ""
     sys.modules[__name__].request_feedback = lambda r, c: {
         "success": True,
         "feedback": "<feedback>ok</feedback>",

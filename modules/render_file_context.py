@@ -4,6 +4,13 @@ MODULE_METADATA = {
     "description": "Render read_cache and optional code tables as a unified <file_context> block for planner prompts.",
     "functions": [
         {
+            "name": "refresh_read_cache",
+            "inputs": {
+                "read_cache": "dict mapping project-relative paths to cached file content"
+            },
+            "outputs": "same read_cache dict with every path re-read from disk; unreadable paths removed"
+        },
+        {
             "name": "render_file_context",
             "inputs": {
                 "read_cache": "dict mapping project-relative file paths to file content",
@@ -19,6 +26,22 @@ import json
 
 from build_block_table import build_block_table
 from infer_code_type import infer_code_type
+from read_file import read_file
+
+
+def refresh_read_cache(read_cache):
+    """Re-read every cached path from disk before the next planner turn."""
+    if not isinstance(read_cache, dict) or not read_cache:
+        return read_cache
+
+    for path in list(read_cache):
+        success, content_or_error = read_file(path)
+        if success:
+            read_cache[path] = content_or_error
+        else:
+            read_cache.pop(path, None)
+
+    return read_cache
 
 
 def _ordered_paths(read_cache, path_order=None):
@@ -110,5 +133,12 @@ if __name__ == "__main__":
     assert rendered.endswith("</file_context>")
 
     assert render_file_context({}) == ""
+
+    stale_path = "test_temp/temp.py"
+    success, disk_content = read_file(stale_path)
+    assert success, disk_content
+    stale_cache = {stale_path: "stale content"}
+    refresh_read_cache(stale_cache)
+    assert stale_cache[stale_path] == disk_content
 
     print("RENDER_FILE_CONTEXT SELF TEST PASSED")
