@@ -451,7 +451,7 @@ def run_readonly_subagents_parallel(specs):
     if not items:
         return []
 
-    ctx = copy_context()
+    parent_ctx = copy_context()
 
     def run_one(spec):
         spec = spec if isinstance(spec, dict) else {}
@@ -463,13 +463,17 @@ def run_readonly_subagents_parallel(specs):
             timeout_seconds=spec.get("timeout_seconds", SUBAGENT_DEFAULT_TIMEOUT_SECONDS),
         )
 
+    def run_one_in_context(spec):
+        # A Context object can only be entered once; give each worker its own copy.
+        return parent_ctx.copy().run(run_one, spec)
+
     if len(items) == 1:
-        return [ctx.run(run_one, items[0])]
+        return [parent_ctx.run(run_one, items[0])]
 
     results = [None] * len(items)
     workers = min(8, len(items))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(ctx.run, run_one, spec) for spec in items]
+        futures = [pool.submit(run_one_in_context, spec) for spec in items]
         for index, (spec, future) in enumerate(zip(items, futures)):
             try:
                 timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or SUBAGENT_DEFAULT_TIMEOUT_SECONDS), 3600))

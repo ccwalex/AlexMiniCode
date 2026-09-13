@@ -392,6 +392,32 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertFalse(too_many["success"])
         self.assertIn("at most", too_many["error"])
 
+    def test_parallel_readonly_subagents_do_not_reenter_same_context(self):
+        specs = [
+            {"task": f"task-{index}", "role": "explore", "mode": "readonly", "timeout_seconds": 5}
+            for index in range(4)
+        ]
+        with patch.object(
+            runner,
+            "run_subagent",
+            side_effect=lambda **kwargs: {
+                "success": True,
+                "status": "completed",
+                "role": kwargs.get("role", "explore"),
+                "mode": "readonly",
+                "summary": kwargs.get("task", ""),
+                "artifacts": [],
+            },
+        ) as run_subagent:
+            results = runner.run_readonly_subagents_parallel(specs)
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(item.get("success") for item in results))
+        self.assertEqual(run_subagent.call_count, 4)
+        self.assertNotIn(
+            "already entered",
+            " ".join(str(item.get("error") or "") for item in results),
+        )
+
     def test_execute_plan_runs_readonly_batch_in_parallel_helper(self):
         import modules.execute_api_plan as plan_module
 
