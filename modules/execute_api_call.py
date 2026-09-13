@@ -191,6 +191,18 @@ def _progress_substep(batch_id, step_index, call, phase, status, detail=""):
         pass
 
 
+def _dependency_cascade_detail(path, cascade=None):
+    if not isinstance(cascade, dict):
+        return str(path or "")
+    if not cascade.get("changed"):
+        reason = str(cascade.get("reason") or "no I/O change").strip()
+        return f"{path} ({reason})"
+    dependents = cascade.get("dependents") or []
+    updates = cascade.get("updates") or []
+    ok = sum(1 for item in updates if isinstance(item, dict) and item.get("success"))
+    return f"{path} · {len(dependents)} dependents · {ok} updated"
+
+
 def execute_api_call(
     call,
     run_state=None,
@@ -404,11 +416,31 @@ def execute_api_call(
                 run_state=run_state,
             )
             _progress_substep(batch_id, step_index, call, "writing_meta", "done", path)
-            cascade = propagate_module_io_change(
-                path,
-                pre_content=pre_content,
-                post_content=verified_content,
-                run_state=run_state,
+            _progress_substep(batch_id, step_index, call, "dependency", "running", path)
+            try:
+                cascade = propagate_module_io_change(
+                    path,
+                    pre_content=pre_content,
+                    post_content=verified_content,
+                    run_state=run_state,
+                )
+            except Exception as exc:
+                _progress_substep(
+                    batch_id,
+                    step_index,
+                    call,
+                    "dependency",
+                    "failed",
+                    f"{path}: {exc}",
+                )
+                raise
+            _progress_substep(
+                batch_id,
+                step_index,
+                call,
+                "dependency",
+                "done",
+                _dependency_cascade_detail(path, cascade),
             )
 
             result["success"] = True
@@ -530,11 +562,31 @@ def execute_api_call(
             post_content = edit_res.get("reconstructed_source")
             if post_content is None:
                 post_content = read_cache.get(path)
-            cascade = propagate_module_io_change(
-                path,
-                pre_content=pre_content,
-                post_content=post_content,
-                run_state=run_state,
+            _progress_substep(batch_id, step_index, call, "dependency", "running", path)
+            try:
+                cascade = propagate_module_io_change(
+                    path,
+                    pre_content=pre_content,
+                    post_content=post_content,
+                    run_state=run_state,
+                )
+            except Exception as exc:
+                _progress_substep(
+                    batch_id,
+                    step_index,
+                    call,
+                    "dependency",
+                    "failed",
+                    f"{path}: {exc}",
+                )
+                raise
+            _progress_substep(
+                batch_id,
+                step_index,
+                call,
+                "dependency",
+                "done",
+                _dependency_cascade_detail(path, cascade),
             )
 
             result["success"] = True
@@ -637,14 +689,40 @@ def execute_api_call(
                     if read_success:
                         post_content = content_or_error
                     refresh_after_file_change(art, run_state=run_state)
-                    cascades.append(
-                        propagate_module_io_change(
+                    _progress_substep(
+                        batch_id,
+                        step_index,
+                        call,
+                        "dependency",
+                        "running",
+                        art,
+                    )
+                    try:
+                        cascade = propagate_module_io_change(
                             art,
                             pre_content=pre_content,
                             post_content=post_content,
                             run_state=run_state,
                         )
+                    except Exception as exc:
+                        _progress_substep(
+                            batch_id,
+                            step_index,
+                            call,
+                            "dependency",
+                            "failed",
+                            f"{art}: {exc}",
+                        )
+                        raise
+                    _progress_substep(
+                        batch_id,
+                        step_index,
+                        call,
+                        "dependency",
+                        "done",
+                        _dependency_cascade_detail(art, cascade),
                     )
+                    cascades.append(cascade)
 
             result["success"] = True
             result["output"] = {

@@ -30,7 +30,7 @@ MODULE_METADATA = {
     ],
 }
 
-_RUNNING = {"planned", "started", "running", "verifying", "writing_meta", "repairing"}
+_RUNNING = {"planned", "started", "running", "verifying", "writing_meta", "repairing", "dependency"}
 _DONE = {"done", "skipped"}
 _FAILED = {"failed", "timeout"}
 

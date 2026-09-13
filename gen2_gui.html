@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Gen2 Agent</title>
 <style>
-:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a}
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a;--progress-dependency:#f4f6f8}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui}
 .topbar{display:flex;align-items:center;gap:12px;padding:12px 12px 0}
 .topbar h1{margin:0;font-size:20px}
@@ -40,6 +40,7 @@ button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;bord
 .badge-running{background:var(--progress-running)}
 .badge-done{background:var(--good)}
 .badge-meta{background:var(--good)}
+.badge-dependency{background:var(--progress-dependency)}
 .badge-failed{background:var(--bad)}
 .step-detail{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .logs{height:calc(100vh - 460px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
@@ -705,6 +706,7 @@ function progressBadgeClass(row){
   const status=String(row.status||'');
   const phase=String(row.phase||'');
   if(phase==='writing_meta') return status==='done'?'badge-meta':'badge-meta';
+  if(phase==='dependency') return status==='failed'?'badge-failed':'badge-dependency';
   if(['failed','timeout'].includes(status)) return 'badge-failed';
   if(['done','skipped'].includes(status)) return 'badge-done';
   if(['running','started','verifying','repairing','shell'].includes(status)||['verifying','repairing','shell'].includes(phase)) return 'badge-running';
@@ -713,6 +715,7 @@ function progressBadgeClass(row){
 function progressRowLabel(row){
   const phase=String(row.phase||'');
   if(phase==='writing_meta') return 'writing meta';
+  if(phase==='dependency') return 'backward deps';
   if(phase==='verifying') return 'verifying';
   if(phase==='repairing') return 'repairing';
   if(phase==='shell') return 'shell';
@@ -723,7 +726,7 @@ function renderPlanProgress(progress){
   const batches=progress?.batches||{};
   const activeBatch=progress?.active_batch_id;
   if(!snapshot.length){
-    planProgressEl.innerHTML='<div class="muted">No structured step progress yet. Long waits may be planner LLM, verify/repair, shell, or subagent work.</div>';
+    planProgressEl.innerHTML='<div class="muted">No structured step progress yet. Long waits may be planner LLM, verify/repair, backward deps, shell, or subagent work.</div>';
     return;
   }
   const filtered=activeBatch?snapshot.filter(r=>String(r.batch_id||'')===activeBatch):snapshot;
