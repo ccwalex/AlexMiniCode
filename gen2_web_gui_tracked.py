@@ -863,12 +863,15 @@ def init_agent():
     ensure_module_path()
 
     from modules.ensure_memory_files import ensure_memory_files
+    from modules.ensure_project_git import ensure_project_git
 
     # Canonical memory initialization.
     ensure_memory_files()
 
     # Web GUI queue/current files only.
     ensure_storage()
+
+    git_status = ensure_project_git(project_root())
 
     return {
         "success": True,
@@ -877,6 +880,7 @@ def init_agent():
         "source_dir": str(source_dir()),
         "memory_dir": str(memory_dir()),
         "jobs_dir": str(jobs_dir()),
+        "git": git_status,
     }
 def refresh_all():
     ensure_module_path()
@@ -940,6 +944,61 @@ def git_action(data):
     else: raise ValueError('unsupported git action')
     p=subprocess.run(['git']+args,cwd=str(project_root()),capture_output=True,text=True,timeout=120)
     return {'success':p.returncode==0,'cmd':'git '+' '.join(args),'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}
+def github_bootstrap_api():
+    ensure_module_path()
+    from modules.github_git import github_bootstrap
+    return github_bootstrap(str(project_root()))
+def github_save_api(data):
+    ensure_module_path()
+    from modules.github_git import github_save_and_bootstrap
+    return github_save_and_bootstrap(data, str(project_root()))
+def github_test_api(data):
+    ensure_module_path()
+    from modules.github_config import save_github_config
+    from modules.github_git import test_github_login
+    cfg = data.get('config') if isinstance(data, dict) else {}
+    if cfg:
+        saved = save_github_config(cfg)
+    else:
+        from modules.github_config import load_github_config
+        saved = load_github_config()
+    from modules.github_config import public_github_config
+    result = test_github_login(saved)
+    result['config'] = public_github_config(saved)
+    return result
+def github_remote_api(data):
+    ensure_module_path()
+    from modules.github_config import load_github_config, save_github_config
+    from modules.github_git import configure_github_remote
+    cfg = data.get('config') if isinstance(data, dict) else {}
+    saved = save_github_config(cfg) if cfg else load_github_config()
+    return configure_github_remote(saved, str(project_root()))
+def github_clone_api(data):
+    ensure_module_path()
+    from modules.ensure_project_git import ensure_project_git
+    from modules.github_config import load_github_config, save_github_config
+    from modules.github_git import clone_github_repo, github_bootstrap
+    cfg = data.get('config') if isinstance(data, dict) else {}
+    saved = save_github_config(cfg) if cfg else load_github_config()
+    result = clone_github_repo(saved, str(project_root()), force=bool(data.get('force')))
+    if result.get('success'):
+        result['gitignore'] = ensure_project_git(project_root())
+    result['status'] = github_bootstrap(str(project_root())).get('status')
+    return result
+def github_push_api(data):
+    ensure_module_path()
+    from modules.github_config import load_github_config, save_github_config
+    from modules.github_git import github_bootstrap, push_github_repo
+    cfg = data.get('config') if isinstance(data, dict) else {}
+    saved = save_github_config(cfg) if cfg else load_github_config()
+    result = push_github_repo(
+        saved,
+        str(project_root()),
+        message=str(data.get('message') or '').strip() or None,
+        add_all=bool(data.get('add_all', True)),
+    )
+    result['status'] = github_bootstrap(str(project_root())).get('status')
+    return result
 # discussion mode
 def discussion_gui_defaults():
     ensure_module_path()
@@ -1077,6 +1136,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/subagent/status': return jresp(self,subagent_status())
             if path=='/api/discussion/context': return jresp(self,discussion_bootstrap())
             if path=='/api/model_config': return jresp(self,model_config_bootstrap())
+            if path=='/api/github': return jresp(self,github_bootstrap_api())
             q=urlparse(self.path).query
             if path=='/api/model_config/models':
                 params=parse_qs(q)
@@ -1131,6 +1191,11 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/model_config/save':
                 return jresp(self, model_config_save(data))
             if path=='/api/git': return jresp(self,git_action(data))
+            if path=='/api/github/save': return jresp(self,github_save_api(data))
+            if path=='/api/github/test': return jresp(self,github_test_api(data))
+            if path=='/api/github/remote': return jresp(self,github_remote_api(data))
+            if path=='/api/github/clone': return jresp(self,github_clone_api(data))
+            if path=='/api/github/push': return jresp(self,github_push_api(data))
             return jresp(self,{'error':'not found'},404)
         except Exception as e: return jresp(self,{'success':False,'error':str(e)},500)
     def log_message(self,fmt,*args): sys.stderr.write('[%s] %s\n'%(self.log_date_time_string(),fmt%args))

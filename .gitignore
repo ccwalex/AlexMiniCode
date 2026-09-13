@@ -28,7 +28,8 @@ credentials.json
 .idea/
 .vscode/
 
-# Runtime agent state (keep structure, not live runs)
-agent_memory/jobs/
-agent_memory/execution/recent_runs.json
-agent_memory/reasoning/llm_memory.json
+# Agent harness and runtime memory (local copies; created or vendored outside git)
+agent/
+**/agent/
+agent_memory/
+**/agent_memory/

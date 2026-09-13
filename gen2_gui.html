@@ -84,6 +84,7 @@ button:disabled{opacity:.55;cursor:wait}
     <button class="tab active" id="tabExecution" onclick="switchMode('execution')">Execution</button>
     <button class="tab" id="tabPlanning" onclick="switchMode('planning')">Planning</button>
     <button class="secondary" onclick="openModelConfig()">Model Config</button>
+    <button class="secondary" onclick="openGitHubConfig()">GitHub</button>
   </div>
 </div>
 
@@ -227,6 +228,40 @@ Do not allow shell redirection for file writes.</textarea>
 </div>
 </div>
 
+<div id="githubModal" class="modal-backdrop">
+<div class="modal wide">
+<h2>GitHub</h2>
+<div class="small">Configure GitHub login, repository, clone, and push. Credentials are stored locally in <code>agent_memory/github_config.json</code>.</div>
+<div id="githubStatus" class="small muted"></div>
+<div class="two" style="margin-top:10px">
+<div><label>Username</label><input id="ghUsername" placeholder="github username"></div>
+<div><label>Personal access token</label><input id="ghToken" type="password" placeholder="ghp_..."></div>
+</div>
+<div class="two" style="margin-top:8px">
+<div><label>Repository</label><input id="ghRepo" placeholder="owner/repo or https://github.com/owner/repo"></div>
+<div><label>Branch</label><input id="ghBranch" placeholder="main"></div>
+</div>
+<div class="two" style="margin-top:8px">
+<div><label>Remote name</label><input id="ghRemote" placeholder="origin"></div>
+<div><label>Clone URL override</label><input id="ghCloneUrl" placeholder="optional custom clone URL"></div>
+</div>
+<div class="small" style="margin-top:8px">Token status: <span id="ghTokenStatus">not configured</span> · Clone URL: <span id="ghPublicUrl">—</span></div>
+<pre id="ghRepoStatus" class="box small" style="margin-top:8px">Loading repository status…</pre>
+<label class="small"><input type="checkbox" id="ghForceClone"> Force clone (replace existing .git and ignore non-agent files)</label>
+<div style="margin-top:8px">
+<label>Commit message (optional, used by Push)</label>
+<input id="ghCommitMsg" placeholder="commit message for push">
+</div>
+<div id="githubOutput" class="box small" style="margin-top:8px;max-height:180px;overflow:auto"></div>
+<button class="good" onclick="saveGitHubConfig()">Save</button>
+<button class="secondary" onclick="testGitHubLogin()">Test login</button>
+<button class="secondary" onclick="configureGitHubRemote()">Configure remote</button>
+<button class="secondary" onclick="cloneGitHubRepo()">Clone</button>
+<button class="secondary" onclick="pushGitHubRepo()">Push</button>
+<button class="secondary" onclick="closeGitHubConfig()">Close</button>
+</div>
+</div>
+
 <div id="resolveModal" class="modal-backdrop">
 <div class="modal">
 <h2>Mark resolved issues</h2>
@@ -241,6 +276,7 @@ Do not allow shell redirection for file writes.</textarea>
 let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set();
 let selectedDecisions=new Set(), discussionSession=null, injectedEntries=[], discussionBusy=false;
 let modelConfigState=null, modelOptionsCache={}, cursorCatalogCache=null;
+let githubState=null;
 
 async function api(p,o={}){
   const opts={cache:'no-store',...o};
@@ -667,6 +703,121 @@ async function openModelConfig(){
 
 function closeModelConfig(){
   modelConfigModal.classList.remove('open');
+}
+
+function collectGitHubConfigFromUI(){
+  return {
+    username: document.getElementById('ghUsername').value.trim(),
+    token: document.getElementById('ghToken').value.trim(),
+    repo: document.getElementById('ghRepo').value.trim(),
+    branch: document.getElementById('ghBranch').value.trim() || 'main',
+    remote: document.getElementById('ghRemote').value.trim() || 'origin',
+    clone_url: document.getElementById('ghCloneUrl').value.trim(),
+  };
+}
+
+function applyGitHubState(state){
+  githubState=state||{};
+  const cfg=githubState.config||{};
+  document.getElementById('ghUsername').value=cfg.username||'';
+  document.getElementById('ghRepo').value=cfg.repo||'';
+  document.getElementById('ghBranch').value=cfg.branch||'main';
+  document.getElementById('ghRemote').value=cfg.remote||'origin';
+  document.getElementById('ghCloneUrl').value=cfg.clone_url||'';
+  document.getElementById('ghToken').value='';
+  document.getElementById('ghTokenStatus').textContent=cfg.token_configured?`configured (${cfg.token_masked||'saved'})`:'not configured';
+  document.getElementById('ghPublicUrl').textContent=githubState.public_clone_url||'—';
+  const st=githubState.status||{};
+  const lines=[
+    `project: ${st.project_root||'?'}`,
+    `git: ${st.git_available?'available':'missing'} · repo: ${st.is_repo?'yes':'no'}`,
+    `branch: ${st.branch||'—'} · remote: ${st.remote||'—'}`,
+    `remote url: ${st.remote_url||'—'}`,
+    `dirty: ${st.dirty?'yes':'no'} · ahead: ${st.ahead??0} · behind: ${st.behind??0}`,
+  ];
+  if((st.non_repo_entries||[]).length){
+    lines.push(`other root entries: ${st.non_repo_entries.join(', ')}`);
+  }
+  document.getElementById('ghRepoStatus').textContent=lines.join('\n');
+}
+
+function setGitHubOutput(obj){
+  document.getElementById('githubOutput').textContent=typeof obj==='string'?obj:JSON.stringify(obj,null,2);
+}
+
+async function openGitHubConfig(){
+  document.getElementById('githubStatus').textContent='Loading...';
+  document.getElementById('githubModal').classList.add('open');
+  try{
+    const d=await api('/api/github');
+    applyGitHubState(d);
+    document.getElementById('githubStatus').textContent='Saved credentials stay on disk; leave token blank to keep the existing token.';
+  }catch(e){
+    document.getElementById('githubStatus').textContent='Failed to load GitHub settings: '+e.message;
+  }
+}
+
+function closeGitHubConfig(){
+  document.getElementById('githubModal').classList.remove('open');
+}
+
+async function saveGitHubConfig(){
+  try{
+    const d=await api('/api/github/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectGitHubConfigFromUI()})});
+    applyGitHubState(d);
+    setGitHubOutput(d);
+    document.getElementById('githubStatus').textContent='GitHub settings saved.';
+  }catch(e){
+    setGitHubOutput('Save failed: '+e.message);
+  }
+}
+
+async function testGitHubLogin(){
+  try{
+    const d=await api('/api/github/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectGitHubConfigFromUI()})});
+    setGitHubOutput(d);
+    document.getElementById('githubStatus').textContent=d.login?`Authenticated as ${d.login}`:'Login test finished';
+  }catch(e){
+    setGitHubOutput('Login test failed: '+e.message);
+  }
+}
+
+async function configureGitHubRemote(){
+  try{
+    const d=await api('/api/github/remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectGitHubConfigFromUI()})});
+    setGitHubOutput(d);
+    const refreshed=await api('/api/github');
+    applyGitHubState(refreshed);
+  }catch(e){
+    setGitHubOutput('Configure remote failed: '+e.message);
+  }
+}
+
+async function cloneGitHubRepo(){
+  const force=document.getElementById('ghForceClone').checked;
+  if(force && !confirm('Force clone will replace the existing .git directory. Continue?')) return;
+  try{
+    const d=await api('/api/github/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectGitHubConfigFromUI(),force})});
+    setGitHubOutput(d);
+    applyGitHubState({...githubState,status:d.status||githubState?.status});
+    await refreshEverything();
+  }catch(e){
+    setGitHubOutput('Clone failed: '+e.message);
+  }
+}
+
+async function pushGitHubRepo(){
+  const message=document.getElementById('ghCommitMsg').value.trim();
+  if(message && !confirm(`Push with commit message "${message}"?`)) return;
+  if(!message && !confirm('Push current branch to GitHub?')) return;
+  try{
+    const d=await api('/api/github/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectGitHubConfigFromUI(),message,add_all:true})});
+    setGitHubOutput(d);
+    const refreshed=await api('/api/github');
+    applyGitHubState(refreshed);
+  }catch(e){
+    setGitHubOutput('Push failed: '+e.message);
+  }
 }
 
 async function saveModelConfig(){
