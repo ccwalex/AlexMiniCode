@@ -78,8 +78,8 @@ class SubagentDelegationTests(unittest.TestCase):
             "error": "child task failed",
         }
         with patch.object(api_module, "run_subagent", return_value=child), patch.object(
-            api_module, "propagate_module_io_change", return_value={"changed": False}
-        ):
+            api_module, "queue_dependency_cascade"
+        ) as queue_cascade:
             read_cache = {"agent/changed.py": "stale", "agent/other.py": "keep"}
             result = api_module.execute_api_call(
                 {
@@ -93,6 +93,7 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(result["output"]["subagent_result"], child)
         self.assertEqual(read_cache["agent/changed.py"], "stale")
         self.assertEqual(read_cache["agent/other.py"], "keep")
+        queue_cascade.assert_called_once()
 
     def test_parent_feedback_is_summary_only_and_bounded(self):
         execution = {

@@ -195,6 +195,25 @@ def emit_step(batch_id: str, index: int, call, status: str, *, phase=None, paral
     )
 
 
+def emit_turn_dependency(batch_id: str, status: str, detail: str = ""):
+    if not batch_id:
+        return
+    emit(
+        {
+            "event": "substep",
+            "batch_id": batch_id,
+            "step_id": f"{batch_id}:turn:dependency",
+            "index": None,
+            "status": status,
+            "action": "dependency",
+            "url": "/dependency_cascade",
+            "label": "backward deps",
+            "detail": str(detail or "")[:500],
+            "phase": "dependency",
+        }
+    )
+
+
 def emit_substep(batch_id: str, index: int, call, phase: str, status: str, detail: str = ""):
     if not isinstance(call, dict):
         call = {}

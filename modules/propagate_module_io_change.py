@@ -11,7 +11,25 @@ MODULE_METADATA = {
                 "post_content": "str or None source after the change",
             },
             "outputs": "dict summarizing cascade actions",
-        }
+        },
+        {
+            "name": "queue_dependency_cascade",
+            "inputs": {
+                "run_state": "RunState with pending_dependency_cascades map",
+                "path": "str changed file path",
+                "pre_content": "str or None source before the change",
+            },
+            "outputs": "None",
+        },
+        {
+            "name": "flush_dependency_cascades",
+            "inputs": {
+                "run_state": "RunState with queued dependency cascades",
+                "read_cache": "dict optional post-change file cache",
+                "batch_id": "str optional progress batch id",
+            },
+            "outputs": "list of cascade summary dicts",
+        },
     ],
 }
 
@@ -199,3 +217,91 @@ def snapshot_pre_content(path, read_cache=None):
     except Exception:
         pass
     return None
+
+
+def dependency_cascade_detail(path, cascade=None):
+    if not isinstance(cascade, dict):
+        return str(path or "")
+    if not cascade.get("changed"):
+        reason = str(cascade.get("reason") or "no I/O change").strip()
+        return f"{path} ({reason})"
+    dependents = cascade.get("dependents") or []
+    updates = cascade.get("updates") or []
+    ok = sum(1 for item in updates if isinstance(item, dict) and item.get("success"))
+    return f"{path} · {len(dependents)} dependents · {ok} updated"
+
+
+def _pending_dependency_map(run_state):
+    if run_state is None:
+        return None
+    pending = getattr(run_state, "pending_dependency_cascades", None)
+    if not isinstance(pending, dict):
+        pending = {}
+        run_state.pending_dependency_cascades = pending
+    return pending
+
+
+def queue_dependency_cascade(run_state, path, pre_content=None):
+    path = str(path or "").strip()
+    if not path:
+        return
+    pending = _pending_dependency_map(run_state)
+    if pending is None:
+        return
+    if path not in pending:
+        pending[path] = {"path": path, "pre_content": pre_content}
+
+
+def flush_dependency_cascades(run_state, read_cache=None, batch_id=None):
+    pending = _pending_dependency_map(run_state)
+    if not pending:
+        return []
+
+    items = list(pending.values())
+    pending.clear()
+
+    cascades = []
+    for item in items:
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        pre_content = item.get("pre_content")
+        post_content = read_cache.get(path) if isinstance(read_cache, dict) else None
+        if post_content is None:
+            post_content = _read(path)
+
+        if batch_id:
+            from job_progress import emit_turn_dependency, log_step
+
+            emit_turn_dependency(batch_id, "running", dependency_cascade_detail(path))
+            log_step(f"[Gen2 Turn] backward deps {path} (started)")
+
+        try:
+            cascade = propagate_module_io_change(
+                path,
+                pre_content=pre_content,
+                post_content=post_content,
+                run_state=run_state,
+            )
+        except Exception as exc:
+            if batch_id:
+                from job_progress import emit_turn_dependency, log_step
+
+                emit_turn_dependency(batch_id, "failed", f"{path}: {exc}")
+                log_step(f"[Gen2 Turn] backward deps {path} (failed)")
+            raise
+
+        if batch_id:
+            from job_progress import emit_turn_dependency, log_step
+
+            emit_turn_dependency(
+                batch_id,
+                "done",
+                dependency_cascade_detail(path, cascade),
+            )
+            log_step(
+                f"[Gen2 Turn] backward deps {path} (done) "
+                f"{dependency_cascade_detail(path, cascade)}"
+            )
+        cascades.append(cascade)
+    return cascades

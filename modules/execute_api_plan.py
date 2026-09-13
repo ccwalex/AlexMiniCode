@@ -20,6 +20,7 @@ MODULE_METADATA = {
 
 
 from execute_api_call import execute_api_call
+from propagate_module_io_change import flush_dependency_cascades
 from run_state import RunState
 from subagent_runner import log_subagent_result, run_readonly_subagents_parallel
 from job_progress import emit_batch, emit_plan, emit_step, label_for_call, log_step
@@ -80,6 +81,37 @@ def _record_plan_result(run_state, call, result):
             )
         except Exception:
             pass
+
+
+def _finalize_plan_return(run_state, read_cache, batch_id, base_result):
+    pending = getattr(run_state, "pending_dependency_cascades", None)
+    if not isinstance(pending, dict) or not pending:
+        return base_result
+
+    try:
+        cascades = flush_dependency_cascades(
+            run_state,
+            read_cache=read_cache,
+            batch_id=batch_id,
+        )
+    except Exception as exc:
+        if base_result.get("success"):
+            failed = dict(base_result)
+            failed.update(
+                {
+                    "success": False,
+                    "status": "failed",
+                    "error": f"dependency cascade failed: {exc}",
+                }
+            )
+            return failed
+        return base_result
+
+    if cascades:
+        finalized = dict(base_result)
+        finalized["dependency_cascades"] = cascades
+        return finalized
+    return base_result
 
 
 def execute_api_plan(
@@ -261,19 +293,24 @@ def execute_api_plan(
                 except Exception:
                     pass
 
-            return {
-                "success": False,
-                "status": "failed",
-                "run_state": run_state,
-                "read_cache": read_cache,
-                "results": results,
-                "failed_call": call,
-                "failed_result": result,
-                "feedback": None,
-                "done": False,
-                "conflict": False,
-                "error": result.get("error", "API call failed"),
-            }
+            return _finalize_plan_return(
+                run_state,
+                read_cache,
+                batch_id,
+                {
+                    "success": False,
+                    "status": "failed",
+                    "run_state": run_state,
+                    "read_cache": read_cache,
+                    "results": results,
+                    "failed_call": call,
+                    "failed_result": result,
+                    "feedback": None,
+                    "done": False,
+                    "conflict": False,
+                    "error": result.get("error", "API call failed"),
+                },
+            )
 
         if result.get("request_feedback"):
             current_url = result.get("url")
@@ -316,19 +353,24 @@ def execute_api_plan(
                     kind=batch_kind,
                     total_steps=total_steps,
                 )
-            return {
-                "success": True,
-                "status": "request_feedback",
-                "run_state": run_state,
-                "read_cache": read_cache,
-                "results": results,
-                "failed_call": None,
-                "failed_result": None,
-                "feedback": feedback,
-                "done": False,
-                "conflict": False,
-                "error": None,
-            }
+            return _finalize_plan_return(
+                run_state,
+                read_cache,
+                batch_id,
+                {
+                    "success": True,
+                    "status": "request_feedback",
+                    "run_state": run_state,
+                    "read_cache": read_cache,
+                    "results": results,
+                    "failed_call": None,
+                    "failed_result": None,
+                    "feedback": feedback,
+                    "done": False,
+                    "conflict": False,
+                    "error": None,
+                },
+            )
 
         if result.get("conflict"):
             conflict_output = result.get("output")
@@ -346,55 +388,70 @@ def execute_api_plan(
 
             if batch_id:
                 emit_batch(batch_id, "failed", iteration=iteration, kind=batch_kind, total_steps=total_steps)
-            return {
-                "success": False,
-                "status": "failed",
-                "run_state": run_state,
-                "read_cache": read_cache,
-                "results": results,
-                "failed_call": None,
-                "failed_result": None,
-                "feedback": None,
-                "done": False,
-                "conflict": True,
-                "conflict_output": conflict_output,
-                "error": conflict_text or "Task terminated via /conflict",
-            }
+            return _finalize_plan_return(
+                run_state,
+                read_cache,
+                batch_id,
+                {
+                    "success": False,
+                    "status": "failed",
+                    "run_state": run_state,
+                    "read_cache": read_cache,
+                    "results": results,
+                    "failed_call": None,
+                    "failed_result": None,
+                    "feedback": None,
+                    "done": False,
+                    "conflict": True,
+                    "conflict_output": conflict_output,
+                    "error": conflict_text or "Task terminated via /conflict",
+                },
+            )
 
         if result.get("done"):
             if batch_id:
                 emit_batch(batch_id, "done", iteration=iteration, kind=batch_kind, total_steps=total_steps)
-            return {
-                "success": True,
-                "status": "done",
-                "run_state": run_state,
-                "read_cache": read_cache,
-                "results": results,
-                "failed_call": None,
-                "failed_result": None,
-                "feedback": None,
-                "done": True,
-                "conflict": False,
-                "error": None,
-            }
+            return _finalize_plan_return(
+                run_state,
+                read_cache,
+                batch_id,
+                {
+                    "success": True,
+                    "status": "done",
+                    "run_state": run_state,
+                    "read_cache": read_cache,
+                    "results": results,
+                    "failed_call": None,
+                    "failed_result": None,
+                    "feedback": None,
+                    "done": True,
+                    "conflict": False,
+                    "error": None,
+                },
+            )
 
         index += 1
 
     if batch_id:
         emit_batch(batch_id, "completed", iteration=iteration, kind=batch_kind, total_steps=total_steps)
-    return {
-        "success": True,
-        "status": "completed",
-        "run_state": run_state,
-        "read_cache": read_cache,
-        "results": results,
-        "failed_call": None,
-        "failed_result": None,
-        "feedback": None,
-        "done": False,
-        "conflict": False,
-        "error": None,
-    }
+    return _finalize_plan_return(
+        run_state,
+        read_cache,
+        batch_id,
+        {
+            "success": True,
+            "status": "completed",
+            "run_state": run_state,
+            "read_cache": read_cache,
+            "results": results,
+            "failed_call": None,
+            "failed_result": None,
+            "feedback": None,
+            "done": False,
+            "conflict": False,
+            "error": None,
+        },
+    )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,12 @@ for path in (str(ROOT), str(MODULES)):
 
 from modules.extract_public_contract import extract_public_contract, output_format_changed
 from modules.find_module_dependents import find_module_dependents
-from modules.propagate_module_io_change import propagate_module_io_change
+from modules.propagate_module_io_change import (
+    flush_dependency_cascades,
+    propagate_module_io_change,
+    queue_dependency_cascade,
+)
+from modules.run_state import RunState
 
 
 class DependencyCascadeTests(unittest.TestCase):
@@ -202,6 +207,65 @@ class DependencyCascadeTests(unittest.TestCase):
             result = propagate_module_io_change("pkg/mod.py", before, after, depth=1)
         self.assertEqual(result["reason"], "max cascade depth")
         llm.assert_not_called()
+
+    def test_queue_dedupes_same_path_and_flush_runs_once(self):
+        run_state = RunState(task="demo")
+        queue_dependency_cascade(run_state, "pkg/mod.py", "before")
+        queue_dependency_cascade(run_state, "pkg/mod.py", "ignored-later-pre")
+        self.assertEqual(len(run_state.pending_dependency_cascades), 1)
+
+        with patch(
+            "modules.propagate_module_io_change.propagate_module_io_change",
+            return_value={"changed": False, "reason": "no change"},
+        ) as propagate:
+            cascades = flush_dependency_cascades(
+                run_state,
+                read_cache={"pkg/mod.py": "after"},
+            )
+        propagate.assert_called_once_with(
+            "pkg/mod.py",
+            pre_content="before",
+            post_content="after",
+            run_state=run_state,
+        )
+        self.assertEqual(cascades, [{"changed": False, "reason": "no change"}])
+        self.assertEqual(run_state.pending_dependency_cascades, {})
+
+    def test_execute_api_plan_flushes_dependency_cascade_at_end_of_turn(self):
+        import modules.execute_api_plan as plan_module
+
+        run_state = RunState(task="demo")
+        run_state.pending_dependency_cascades = {
+            "pkg/mod.py": {"path": "pkg/mod.py", "pre_content": "before"},
+        }
+        with patch(
+            "modules.execute_api_plan.flush_dependency_cascades",
+            return_value=[{"changed": False}],
+        ) as flush:
+            result = plan_module._finalize_plan_return(
+                run_state,
+                {"pkg/mod.py": "after"},
+                "batch-1",
+                {
+                    "success": True,
+                    "status": "request_feedback",
+                    "run_state": run_state,
+                    "read_cache": {"pkg/mod.py": "after"},
+                    "results": [],
+                    "failed_call": None,
+                    "failed_result": None,
+                    "feedback": None,
+                    "done": False,
+                    "conflict": False,
+                    "error": None,
+                },
+            )
+        flush.assert_called_once_with(
+            run_state,
+            read_cache={"pkg/mod.py": "after"},
+            batch_id="batch-1",
+        )
+        self.assertEqual(result["dependency_cascades"], [{"changed": False}])
 
 
 if __name__ == "__main__":

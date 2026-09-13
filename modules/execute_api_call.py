@@ -14,7 +14,7 @@ from render_file_context import drop_read_cache
 from job_progress import emit_substep
 from conflict import execute_conflict
 from subagent_runner import log_subagent_result, run_subagent
-from propagate_module_io_change import propagate_module_io_change, snapshot_pre_content
+from propagate_module_io_change import queue_dependency_cascade, snapshot_pre_content
 
 MODULE_METADATA = {
     "name": "execute_api_call",
@@ -189,18 +189,6 @@ def _progress_substep(batch_id, step_index, call, phase, status, detail=""):
         emit_substep(batch_id, step_index, call, phase, status, detail)
     except Exception:
         pass
-
-
-def _dependency_cascade_detail(path, cascade=None):
-    if not isinstance(cascade, dict):
-        return str(path or "")
-    if not cascade.get("changed"):
-        reason = str(cascade.get("reason") or "no I/O change").strip()
-        return f"{path} ({reason})"
-    dependents = cascade.get("dependents") or []
-    updates = cascade.get("updates") or []
-    ok = sum(1 for item in updates if isinstance(item, dict) and item.get("success"))
-    return f"{path} · {len(dependents)} dependents · {ok} updated"
 
 
 def execute_api_call(
@@ -416,38 +404,12 @@ def execute_api_call(
                 run_state=run_state,
             )
             _progress_substep(batch_id, step_index, call, "writing_meta", "done", path)
-            _progress_substep(batch_id, step_index, call, "dependency", "running", path)
-            try:
-                cascade = propagate_module_io_change(
-                    path,
-                    pre_content=pre_content,
-                    post_content=verified_content,
-                    run_state=run_state,
-                )
-            except Exception as exc:
-                _progress_substep(
-                    batch_id,
-                    step_index,
-                    call,
-                    "dependency",
-                    "failed",
-                    f"{path}: {exc}",
-                )
-                raise
-            _progress_substep(
-                batch_id,
-                step_index,
-                call,
-                "dependency",
-                "done",
-                _dependency_cascade_detail(path, cascade),
-            )
+            queue_dependency_cascade(run_state, path, pre_content)
 
             result["success"] = True
             result["output"] = {
                 "write": w_msg,
                 "refresh": refresh_res,
-                "dependency_cascade": cascade,
             }
             return result
         if url == "/write_llm_memory":
@@ -559,41 +521,12 @@ def execute_api_call(
                 run_state=run_state,
             )
             _progress_substep(batch_id, step_index, call, "writing_meta", "done", path)
-            post_content = edit_res.get("reconstructed_source")
-            if post_content is None:
-                post_content = read_cache.get(path)
-            _progress_substep(batch_id, step_index, call, "dependency", "running", path)
-            try:
-                cascade = propagate_module_io_change(
-                    path,
-                    pre_content=pre_content,
-                    post_content=post_content,
-                    run_state=run_state,
-                )
-            except Exception as exc:
-                _progress_substep(
-                    batch_id,
-                    step_index,
-                    call,
-                    "dependency",
-                    "failed",
-                    f"{path}: {exc}",
-                )
-                raise
-            _progress_substep(
-                batch_id,
-                step_index,
-                call,
-                "dependency",
-                "done",
-                _dependency_cascade_detail(path, cascade),
-            )
+            queue_dependency_cascade(run_state, path, pre_content)
 
             result["success"] = True
             result["output"] = {
                 "edit": edit_res,
                 "refresh": refresh_res,
-                "dependency_cascade": cascade,
             }
             return result
 
@@ -677,57 +610,21 @@ def execute_api_call(
                 role=role,
                 task=payload.get("task"),
             )
-            cascades = []
             if mode == "process":
                 for artifact in list(subagent_result.get("artifacts") or []):
                     art = str(artifact or "").strip()
                     if not art:
                         continue
                     pre_content = pre_cache.get(art) or snapshot_pre_content(art, pre_cache)
-                    post_content = None
                     read_success, content_or_error = read_file(art)
-                    if read_success:
-                        post_content = content_or_error
+                    if read_success and isinstance(read_cache, dict):
+                        read_cache[art] = content_or_error
                     refresh_after_file_change(art, run_state=run_state)
-                    _progress_substep(
-                        batch_id,
-                        step_index,
-                        call,
-                        "dependency",
-                        "running",
-                        art,
-                    )
-                    try:
-                        cascade = propagate_module_io_change(
-                            art,
-                            pre_content=pre_content,
-                            post_content=post_content,
-                            run_state=run_state,
-                        )
-                    except Exception as exc:
-                        _progress_substep(
-                            batch_id,
-                            step_index,
-                            call,
-                            "dependency",
-                            "failed",
-                            f"{art}: {exc}",
-                        )
-                        raise
-                    _progress_substep(
-                        batch_id,
-                        step_index,
-                        call,
-                        "dependency",
-                        "done",
-                        _dependency_cascade_detail(art, cascade),
-                    )
-                    cascades.append(cascade)
+                    queue_dependency_cascade(run_state, art, pre_content)
 
             result["success"] = True
             result["output"] = {
                 "subagent_result": subagent_result,
-                "dependency_cascade": cascades,
             }
             result["request_feedback"] = True
             return result
@@ -859,7 +756,7 @@ if __name__ == "__main__":
     }
     sys.modules[__name__].run_shell = lambda c, r: (True, "shell output")
     sys.modules[__name__].refresh_after_file_change = lambda p, run_state=None: {"success": True}
-    sys.modules[__name__].propagate_module_io_change = lambda *a, **k: {"changed": False}
+    sys.modules[__name__].queue_dependency_cascade = lambda *a, **k: None
     sys.modules[__name__].snapshot_pre_content = lambda *a, **k: ""
     sys.modules[__name__].request_feedback = lambda r, c: {
         "success": True,
