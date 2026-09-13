@@ -46,8 +46,9 @@ button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;bord
 .logs{height:calc(100vh - 460px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
 .selected{background:var(--panel2)}
 .status-completed{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--accent)}.status-queued{color:#f4d03f}
-.disc-app{display:grid;grid-template-columns:320px 1fr;gap:12px;min-height:calc(100vh - 80px)}
-.chat-log{height:calc(100vh - 320px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-size:13px}
+.plan-app{display:grid;grid-template-columns:280px minmax(360px,1fr) minmax(320px,1fr);gap:12px;min-height:calc(100vh - 80px)}
+.plan-editor-grid textarea{min-height:calc(100vh - 280px);font-family:monospace;font-size:12px}
+.chat-log{height:calc(100vh - 380px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-size:13px}
 .msg-user{color:#9fd0ff;margin:8px 0}.msg-assistant{color:#e8edf2;margin:8px 0}
 .msg-pending{color:var(--muted);margin:8px 0;display:flex;align-items:center;gap:8px}
 .spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:0 0 auto}
@@ -73,7 +74,7 @@ button:disabled{opacity:.55;cursor:wait}
 .config-table th{text-align:left;color:var(--muted);font-weight:600}
 .config-table select,.config-table input{font-size:13px}
 .config-summary{font-size:12px;color:var(--muted);margin:6px 0 10px}
-@media(max-width:1100px){.app,.disc-app,.review-grid{grid-template-columns:1fr}.logs,.chat-log{height:420px}}
+@media(max-width:1100px){.app,.plan-app,.review-grid{grid-template-columns:1fr}.logs,.chat-log{height:420px}.plan-editor-grid textarea{min-height:240px}}
 </style>
 </head>
 <body>
@@ -81,7 +82,7 @@ button:disabled{opacity:.55;cursor:wait}
   <h1>Gen2 Agent</h1>
   <div class="tabs">
     <button class="tab active" id="tabExecution" onclick="switchMode('execution')">Execution</button>
-    <button class="tab" id="tabDiscussion" onclick="switchMode('discussion')">Discussion</button>
+    <button class="tab" id="tabPlanning" onclick="switchMode('planning')">Planning</button>
     <button class="secondary" onclick="openModelConfig()">Model Config</button>
   </div>
 </div>
@@ -156,35 +157,38 @@ Do not allow shell redirection for file writes.</textarea>
 </div>
 </div>
 
-<div id="discussionMode" class="mode-panel">
-<div class="disc-app">
+<div id="planningMode" class="mode-panel">
+<div class="plan-app">
 <div class="panel">
 <h2>Decisions</h2>
-<div class="small">Select conflict entries to inject into this discussion.</div>
+<div class="small">Select conflict entries to inject into the optional LLM discussion.</div>
 <button class="secondary" onclick="loadDiscussion()">Reload</button>
-<button class="secondary" onclick="resetDiscussion()">New Discussion</button>
+<button class="secondary" onclick="resetDiscussion()">New discussion</button>
 <div id="decisionList" class="box" style="max-height:calc(100vh - 180px)"></div>
 <div class="small">Phase: <span id="discPhase">chat</span></div>
 </div>
 <div class="panel">
-<h2>Discussion</h2>
-<div class="small">Multi-turn conversation to resolve selected conflicts by revising project.md and current_plan.md. Type <b>[END]</b> when ready to finalize file outputs.</div>
+<h2>Project &amp; Plan</h2>
+<div class="small">Edit directly — no LLM required. Save writes to <code>agent_memory/core/project.md</code> and <code>agent_memory/planning/current_plan.md</code>.</div>
+<div id="planningStatus" class="small muted"></div>
+<div class="review-grid plan-editor-grid">
+<div><label>project.md</label><textarea id="reviewProject"></textarea></div>
+<div><label>current_plan.md</label><textarea id="reviewPlan"></textarea></div>
+</div>
+<button class="good" onclick="savePlanningFiles()">Save</button>
+<button class="secondary" onclick="reloadPlanningFiles()">Reload</button>
+<button class="secondary" onclick="saveDiscussionFiles()">Save &amp; resolve conflicts</button>
+<button class="danger" onclick="discardDiscussionFiles()">Discard LLM drafts</button>
+</div>
+<div class="panel">
+<h2>Conflict discussion</h2>
+<div class="small">Optional LLM chat to resolve selected conflicts. Draft <code>&lt;project&gt;</code> / <code>&lt;plan&gt;</code> tags in any response load into the editors. Type <b>[END]</b> to request final complete drafts.</div>
 <div id="chatLog" class="chat-log"></div>
 <div class="config-summary">Discussion LLM: <span id="discSettingsSummary">loading...</span> (configure via Model Config)</div>
 <textarea id="discInput" rows="4" placeholder="Discuss conflicts, ambiguities, or required plan changes..."></textarea>
 <button id="discSendBtn" onclick="sendDiscussion()">Send</button>
 <button id="discEndBtn" class="secondary" onclick="sendDiscussionEnd()">Send [END]</button>
 <div id="discBusy" class="small" style="display:none">Waiting for the discussion model…</div>
-<div id="reviewPanel" class="review-panel" style="display:none">
-<h3>Review proposed files</h3>
-<div class="small">Edit before saving. Save overwrites agent_memory/core/project.md and agent_memory/planning/current_plan.md.</div>
-<div class="review-grid">
-<div><label>project.md</label><textarea id="reviewProject"></textarea></div>
-<div><label>current_plan.md</label><textarea id="reviewPlan"></textarea></div>
-</div>
-<button class="good" onclick="saveDiscussionFiles()">Save files</button>
-<button class="danger" onclick="discardDiscussionFiles()">Discard changes</button>
-</div>
 </div>
 </div>
 </div>
@@ -680,10 +684,10 @@ async function saveModelConfig(){
 
 function switchMode(mode){
   executionMode.classList.toggle('active', mode==='execution');
-  discussionMode.classList.toggle('active', mode==='discussion');
+  planningMode.classList.toggle('active', mode==='planning');
   tabExecution.classList.toggle('active', mode==='execution');
-  tabDiscussion.classList.toggle('active', mode==='discussion');
-  if(mode==='discussion') loadDiscussion();
+  tabPlanning.classList.toggle('active', mode==='planning');
+  if(mode==='planning') loadDiscussion();
 }
 
 function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=selectedGroups.size}
@@ -935,6 +939,18 @@ function applyDiscussionSettings(settings){
   discSettingsSummary.textContent=formatRoleSummary(settings);
 }
 
+function populatePlanningEditors(ctx){
+  const session=ctx.session||{};
+  const pendingProject=String(session.pending_project||'').trim();
+  const pendingPlan=String(session.pending_plan||'').trim();
+  reviewProject.value=pendingProject||ctx.project||'';
+  reviewPlan.value=pendingPlan||ctx.plan||'';
+}
+
+function setPlanningStatus(text){
+  planningStatus.textContent=String(text||'');
+}
+
 function updateDiscussionUI(ctx){
   discussionSession=ctx.session||{};
   injectedEntries=discussionSession.selected_entries||[];
@@ -946,12 +962,7 @@ function updateDiscussionUI(ctx){
   syncDecisionChecks();
   renderChat(discussionSession.messages||[]);
   discPhase.textContent=discussionSession.phase||'chat';
-  const inReview=discussionSession.phase==='review';
-  reviewPanel.style.display=inReview?'block':'none';
-  if(inReview){
-    reviewProject.value=discussionSession.pending_project||ctx.project||'';
-    reviewPlan.value=discussionSession.pending_plan||ctx.plan||'';
-  }
+  populatePlanningEditors(ctx);
 }
 
 async function loadDiscussion(){
@@ -987,12 +998,20 @@ async function sendDiscussionMessage(text){
     if(!d.success){alert(d.error||'Discussion call failed');renderChat(discussionSession?.messages||[]);return}
     discussionSession=d.session||{};
     injectedEntries=discussionSession.selected_entries||injectedEntries;
-    updateDiscussionUI({
-      decisions:(await api('/api/discussion/context')).decisions,
-      session:discussionSession,
-      project:reviewProject.value,
-      plan:reviewPlan.value
-    });
+    const ctx=await api('/api/discussion/context');
+    updateDiscussionUI({...ctx, session:discussionSession});
+    const captured=d.captured||{};
+    if(captured.has_project){
+      reviewProject.value=discussionSession.pending_project||'';
+    }
+    if(captured.has_plan){
+      reviewPlan.value=discussionSession.pending_plan||'';
+    }
+    if(captured.has_project||captured.has_plan){
+      setPlanningStatus('Draft loaded from assistant — review and Save.');
+    }else if(d.is_end){
+      setPlanningStatus('[END] received — review editors and Save when ready.');
+    }
   }catch(e){
     alert(e.message||'Discussion call failed');
     renderChat(discussionSession?.messages||[]);
@@ -1003,6 +1022,26 @@ async function sendDiscussionMessage(text){
 
 async function sendDiscussion(){await sendDiscussionMessage(discInput.value)}
 async function sendDiscussionEnd(){await sendDiscussionMessage('[END]')}
+
+async function savePlanningFiles(){
+  const payload={
+    project:reviewProject.value,
+    plan:reviewPlan.value
+  };
+  const d=await api('/api/planning/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!d.success){alert(d.error||'Save failed');return}
+  setPlanningStatus('Saved to disk.');
+  discussionSession=d.session||discussionSession;
+}
+
+async function reloadPlanningFiles(){
+  if(reviewProject.value||reviewPlan.value){
+    if(!confirm('Reload from disk? Unsaved editor changes will be lost.')) return;
+  }
+  const ctx=await api('/api/discussion/context');
+  updateDiscussionUI(ctx);
+  setPlanningStatus('Reloaded from disk.');
+}
 
 async function saveDiscussionFiles(){
   const payload={
@@ -1015,10 +1054,10 @@ async function saveDiscussionFiles(){
 }
 
 async function discardDiscussionFiles(){
-  if(!confirm('Discard proposed file changes?')) return;
+  if(!confirm('Discard LLM draft proposals and reload from disk?')) return;
   await api('/api/discussion/discard',{method:'POST'});
-  reviewPanel.style.display='none';
-  openResolveModal();
+  await loadDiscussion();
+  setPlanningStatus('LLM drafts discarded.');
 }
 
 function openResolveModal(){

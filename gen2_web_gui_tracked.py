@@ -983,6 +983,13 @@ def discussion_save(data):
         project=str(data.get('project', '')),
         plan=str(data.get('plan', '')),
     )
+def planning_save(data):
+    ensure_module_path()
+    from modules.discussion_mode import save_planning_files
+    return save_planning_files(
+        project=str(data.get('project', '')),
+        plan=str(data.get('plan', '')),
+    )
 def discussion_discard():
     ensure_module_path()
     from modules.discussion_mode import discussion_discard_files
@@ -1113,6 +1120,8 @@ class Handler(BaseHTTPRequestHandler):
                 return jresp(self, discussion_update_settings(data))
             if path=='/api/discussion/save':
                 return jresp(self, discussion_save(data))
+            if path=='/api/planning/save':
+                return jresp(self, planning_save(data))
             if path=='/api/discussion/discard':
                 return jresp(self, discussion_discard())
             if path=='/api/discussion/resolve':

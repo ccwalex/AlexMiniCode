@@ -77,8 +77,9 @@ Discussion rules:
 - Have a normal multi-turn conversation with the user.
 - Ask clarifying questions when requirements conflict or are underspecified.
 - Propose concrete edits to project.md and/or current_plan.md when helpful.
-- During ordinary discussion, do NOT emit full replacement file bodies unless the
-  user explicitly asks for a draft before finalization.
+- When proposing concrete document changes during chat, emit draft revisions inside
+  <project>...</project> and/or <plan>...</plan> tags so the user can review them
+  immediately. Partial or incremental drafts are fine during discussion.
 - Focus on resolving the selected decision entries by making the project/plan
   documents clearer, more consistent, and actionable for the execution agent.
 - Do not invent filesystem changes outside these two documents.
@@ -215,6 +216,7 @@ def load_session() -> dict:
     data.setdefault("phase", "chat")
     data.setdefault("pending_project", "")
     data.setdefault("pending_plan", "")
+    data.setdefault("has_pending_proposals", False)
     data.setdefault("end_triggered", False)
     defaults = discussion_defaults()
     data.setdefault("model", defaults["model"])
@@ -243,6 +245,7 @@ def reset_session(defaults: dict | None = None) -> dict:
         "phase": "chat",
         "pending_project": "",
         "pending_plan": "",
+        "has_pending_proposals": False,
         "end_triggered": False,
         "model": settings["model"],
         "effort": settings["effort"],
@@ -518,11 +521,9 @@ def discussion_send_message(
         session["pending_project"] = captured["project"]
     if captured.get("has_plan"):
         session["pending_plan"] = captured["plan"]
-
-    if is_end and captured.get("has_any"):
-        session["phase"] = "review"
-    elif is_end:
-        session["phase"] = "review"
+    session["has_pending_proposals"] = bool(
+        session.get("pending_project") or session.get("pending_plan")
+    )
 
     save_session(session)
 
@@ -537,7 +538,7 @@ def discussion_send_message(
     }
 
 
-def discussion_save_files(project: str, plan: str) -> dict:
+def save_planning_files(project: str, plan: str) -> dict:
     project = str(project or "")
     plan = str(plan or "")
 
@@ -553,9 +554,9 @@ def discussion_save_files(project: str, plan: str) -> dict:
         f.write(plan)
 
     session = load_session()
-    session["phase"] = "resolve"
     session["pending_project"] = project
     session["pending_plan"] = plan
+    session["has_pending_proposals"] = bool(project or plan)
     save_session(session)
 
     return {
@@ -566,10 +567,20 @@ def discussion_save_files(project: str, plan: str) -> dict:
     }
 
 
+def discussion_save_files(project: str, plan: str) -> dict:
+    result = save_planning_files(project, plan)
+    session = result.get("session") or load_session()
+    session["phase"] = "resolve"
+    save_session(session)
+    result["session"] = session
+    return result
+
+
 def discussion_discard_files() -> dict:
     session = load_session()
     session["pending_project"] = ""
     session["pending_plan"] = ""
+    session["has_pending_proposals"] = False
     session["phase"] = "resolve"
     save_session(session)
     return {"success": True, "session": session}
@@ -582,6 +593,7 @@ def discussion_resolve_entries(resolved_entries: list[dict]) -> dict:
     session["end_triggered"] = False
     session["pending_project"] = ""
     session["pending_plan"] = ""
+    session["has_pending_proposals"] = False
     save_session(session)
     result["session"] = session
     return result
@@ -619,5 +631,9 @@ Step 1: fix ambiguity
     assert settings["model"] == "pro"
     assert settings["effort"] == "h"
     assert settings["max_tokens"] == 8192
+
+    session = reset_session()
+    assert session.get("phase") == "chat"
+    assert session.get("has_pending_proposals") is False
 
     print("DISCUSSION_MODE SELF TEST PASSED")
