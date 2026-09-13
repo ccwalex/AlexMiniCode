@@ -21,9 +21,11 @@ MODULE_METADATA = {
 
 from execute_api_call import execute_api_call
 from run_state import RunState
-from subagent_runner import run_readonly_subagents_parallel
+from subagent_runner import log_subagent_result, run_readonly_subagents_parallel
 from job_progress import emit_batch, emit_plan, emit_step, label_for_call, log_step
 
+
+PARALLEL_READONLY_SUBAGENTS = True
 
 VALID_STATUSES = {
     "completed",
@@ -138,7 +140,9 @@ def execute_api_plan(
             else []
         )
         parallel_readonly_batch = (
-            len(batch) >= 2 and all(_subagent_mode(item) == "readonly" for item in batch)
+            PARALLEL_READONLY_SUBAGENTS
+            and len(batch) >= 2
+            and all(_subagent_mode(item) == "readonly" for item in batch)
         )
         if not parallel_readonly_batch:
             if batch_id:
@@ -186,11 +190,11 @@ def execute_api_plan(
                         f"[Gen2 Step {index + offset + 1}/{total_steps}] "
                         f"{label_for_call(item)} ({child_status}, parallel)"
                     )
-                print(
-                    f"[Subagent] done mode=readonly role={payload.get('role', 'explore')} "
-                    f"success={child.get('success')} status={child.get('status')} "
-                    f"error={str(child.get('error') or '')[:300]!r}",
-                    flush=True,
+                log_subagent_result(
+                    child,
+                    mode="readonly",
+                    role=payload.get("role", "explore"),
+                    task=payload.get("task"),
                 )
 
         if batch_results is not None:
@@ -228,17 +232,18 @@ def execute_api_plan(
             _record_plan_result(run_state, call, result)
 
         step_status = "done" if result.get("success") else "failed"
-        if batch_id and batch_results is None:
-            emit_step(
-                batch_id,
-                index,
-                call,
-                step_status,
-                error=str(result.get("error") or ""),
+        if batch_results is None:
+            if batch_id:
+                emit_step(
+                    batch_id,
+                    index,
+                    call,
+                    step_status,
+                    error=str(result.get("error") or ""),
+                )
+            log_step(
+                f"[Gen2 Step {index + 1}/{total_steps}] {step_label} ({step_status})"
             )
-        log_step(
-            f"[Gen2 Step {index + 1}/{total_steps}] {step_label} ({step_status})"
-        )
 
         if not result.get("success"):
             if batch_id:

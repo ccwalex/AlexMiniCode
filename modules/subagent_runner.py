@@ -54,6 +54,33 @@ ROLE_CONFIGS = {
 }
 MAX_RETURN_CHARS = 4000
 MAX_FILES = 20
+SUBAGENT_LOG_SUMMARY_CHARS = 2000
+
+
+def log_subagent_result(result, *, mode=None, role=None, task=None):
+    """Print subagent status and summary explicitly for job logs."""
+    result = result if isinstance(result, dict) else {}
+    mode = mode or result.get("mode") or "?"
+    role = role or result.get("role") or "explore"
+    task_text = str(task or "").strip()
+    print(
+        f"[Subagent] done mode={mode} role={role} "
+        f"success={result.get('success')} status={result.get('status')} "
+        f"error={str(result.get('error') or '')[:300]!r}",
+        flush=True,
+    )
+    if task_text:
+        print(f"[Subagent] task={task_text[:200]!r}", flush=True)
+    summary = str(result.get("summary") or "").strip()
+    if summary:
+        if len(summary) > SUBAGENT_LOG_SUMMARY_CHARS:
+            summary = summary[:SUBAGENT_LOG_SUMMARY_CHARS] + "\n[TRUNCATED]"
+        print("[Subagent] summary:\n" + summary, flush=True)
+    else:
+        print("[Subagent] summary: (empty)", flush=True)
+    artifacts = [str(path) for path in list(result.get("artifacts") or [])[:10] if str(path).strip()]
+    if artifacts:
+        print(f"[Subagent] artifacts: {', '.join(artifacts)}", flush=True)
 
 
 def _subagent_depth():

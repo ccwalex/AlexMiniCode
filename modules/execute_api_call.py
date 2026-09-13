@@ -13,7 +13,7 @@ from scratchpad import execute_scratchpad
 from render_file_context import drop_read_cache
 from job_progress import emit_substep
 from conflict import execute_conflict
-from subagent_runner import run_subagent
+from subagent_runner import log_subagent_result, run_subagent
 from propagate_module_io_change import propagate_module_io_change, snapshot_pre_content
 
 MODULE_METADATA = {
@@ -671,11 +671,11 @@ def execute_api_call(
                 files=payload.get("files", []),
                 timeout_seconds=payload.get("timeout_seconds", 1200),
             )
-            print(
-                f"[Subagent] done mode={mode} role={role} "
-                f"success={subagent_result.get('success')} status={subagent_result.get('status')} "
-                f"error={str(subagent_result.get('error') or '')[:300]!r}",
-                flush=True,
+            log_subagent_result(
+                subagent_result,
+                mode=mode,
+                role=role,
+                task=payload.get("task"),
             )
             cascades = []
             if mode == "process":
