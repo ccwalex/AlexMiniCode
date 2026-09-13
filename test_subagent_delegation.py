@@ -449,6 +449,52 @@ class SubagentDelegationTests(unittest.TestCase):
         sequential.assert_called()
         parallel.assert_not_called()
 
+    def test_execute_plan_continues_from_read_into_trailing_subagent(self):
+        import modules.execute_api_plan as plan_module
+
+        calls = [
+            {"url": "/read", "payload": {"path": "a.py"}},
+            {"url": "/subagent", "payload": {"task": "review a.py", "role": "review", "mode": "readonly"}},
+        ]
+        seen = []
+
+        def fake_execute(call, **kwargs):
+            seen.append(call["url"])
+            if call["url"] == "/read":
+                return {
+                    "success": True,
+                    "url": "/read",
+                    "payload": call["payload"],
+                    "output": {"content": "abc"},
+                    "error": None,
+                    "done": False,
+                    "conflict": False,
+                    "request_feedback": True,
+                }
+            return {
+                "success": True,
+                "url": "/subagent",
+                "payload": call["payload"],
+                "output": {"subagent_result": {"success": True, "summary": "reviewed"}},
+                "error": None,
+                "done": False,
+                "conflict": False,
+                "request_feedback": True,
+            }
+
+        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute), patch.object(
+            plan_module, "run_readonly_subagents_parallel"
+        ) as parallel:
+            result = plan_module.execute_api_plan(calls)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["status"], "request_feedback")
+        self.assertEqual(seen, ["/read", "/subagent"])
+        self.assertEqual([item["url"] for item in result["results"]], ["/read", "/subagent"])
+        parallel.assert_not_called()
+        feedback = _subagent_feedback_from_execution_result(result)
+        self.assertIn("<subagent_result>", feedback)
+        self.assertIn("reviewed", feedback)
+
 
 if __name__ == "__main__":
     unittest.main()

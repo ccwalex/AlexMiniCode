@@ -202,9 +202,14 @@ def execute_api_plan(
             next_url = next_call.get("url") if isinstance(next_call, dict) else None
 
             # Batch consecutive reads before returning their merged file_context.
-            # Consecutive /subagent calls also complete before feedback returns.
+            # A trailing /subagent batch after /read or inspection /shell must also
+            # finish before feedback returns; otherwise the parent prints
+            # [Request Feedback Triggered] with no subagent_result.
             # The explicit /request_feedback endpoint may follow the final read or subagent.
-            if current_url == "/read" and next_url in {"/read", "/request_feedback"}:
+            if current_url == "/read" and next_url in {"/read", "/subagent", "/request_feedback"}:
+                index += 1
+                continue
+            if current_url == "/shell" and next_url in {"/read", "/subagent", "/request_feedback"}:
                 index += 1
                 continue
             if current_url == "/subagent" and next_url in {"/subagent", "/request_feedback"}:
