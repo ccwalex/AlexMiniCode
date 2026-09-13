@@ -869,12 +869,16 @@ function progressBadgeClass(row){
 }
 function progressRowLabel(row){
   const phase=String(row.phase||'');
+  const action=String(row.action||'');
+  if(row.label) return String(row.label);
   if(phase==='writing_meta') return 'writing meta';
+  if(action==='dependency_review') return 'backward deps · review';
+  if(action==='dependency_implement') return 'backward deps · implement';
   if(phase==='dependency') return 'backward deps';
   if(phase==='verifying') return 'verifying';
   if(phase==='repairing') return 'repairing';
   if(phase==='shell') return 'shell';
-  return String(row.label||row.action||row.url||'step');
+  return String(row.action||row.url||'step');
 }
 function renderPlanProgress(progress){
   const snapshot=progress?.snapshot||[];

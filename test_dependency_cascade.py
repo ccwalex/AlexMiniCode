@@ -222,14 +222,135 @@ class DependencyCascadeTests(unittest.TestCase):
                 run_state,
                 read_cache={"pkg/mod.py": "after"},
             )
-        propagate.assert_called_once_with(
-            "pkg/mod.py",
-            pre_content="before",
-            post_content="after",
-            run_state=run_state,
-        )
+        propagate.assert_called_once()
+        call = propagate.call_args
+        self.assertEqual(call.args[0], "pkg/mod.py")
+        self.assertEqual(call.kwargs.get("pre_content"), "before")
+        self.assertEqual(call.kwargs.get("post_content"), "after")
+        self.assertEqual(call.kwargs.get("run_state"), run_state)
         self.assertEqual(cascades, [{"changed": False, "reason": "no change"}])
         self.assertEqual(run_state.pending_dependency_cascades, {})
+
+    def test_ast_only_path_does_not_emit_dependency_progress(self):
+        src = "def foo(x: int) -> dict:\n    return {}\n"
+        with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
+            "modules.propagate_module_io_change.find_module_dependents"
+        ), patch("modules.propagate_module_io_change.run_subagent"), patch(
+            "modules.propagate_module_io_change._emit_dependency_substep"
+        ) as emit_sub, patch("modules.propagate_module_io_change._maybe_start_parent_dependency") as emit_parent:
+            result = propagate_module_io_change(
+                "pkg/mod.py",
+                src,
+                src,
+                batch_id="batch-1",
+                progress_state={"parent_started": False, "llm_started": False},
+            )
+        self.assertFalse(result["changed"])
+        self.assertFalse(result.get("llm_used"))
+        emit_sub.assert_not_called()
+        emit_parent.assert_not_called()
+
+    def test_review_path_emits_dependency_progress(self):
+        with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
+            "modules.propagate_module_io_change.find_module_dependents"
+        ) as grep, patch(
+            "modules.propagate_module_io_change.run_subagent",
+            return_value={"success": True, "summary": "NO\nunchanged"},
+        ), patch("modules.propagate_module_io_change._emit_dependency_substep") as emit_sub, patch(
+            "modules.propagate_module_io_change._maybe_start_parent_dependency"
+        ) as emit_parent:
+            result = propagate_module_io_change(
+                "ui/App.tsx",
+                "not valid {",
+                "still not valid {",
+                batch_id="batch-1",
+                progress_state={"parent_started": False, "llm_started": False},
+            )
+        self.assertFalse(result["changed"])
+        self.assertTrue(result.get("llm_used"))
+        self.assertEqual(result.get("review_called"), 1)
+        grep.assert_not_called()
+        statuses = [call.args[2] for call in emit_sub.call_args_list]
+        self.assertEqual(statuses, ["running", "done"])
+        self.assertEqual(emit_sub.call_args_list[0].args[3], "dependency_review")
+        self.assertEqual(emit_parent.call_args_list[0].args[:2], ("batch-1", "ui/App.tsx"))
+
+    def test_implement_path_emits_dependency_progress(self):
+        before = "def foo(x: int) -> dict:\n    return {}\n"
+        after = "def foo(x: int) -> list:\n    return []\n"
+        with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
+            "modules.propagate_module_io_change.find_module_dependents",
+            return_value=["app/use_foo.py"],
+        ), patch(
+            "modules.propagate_module_io_change.run_subagent",
+            return_value={"success": True, "summary": "updated"},
+        ), patch("modules.propagate_module_io_change.refresh_after_file_change"), patch(
+            "modules.propagate_module_io_change._read",
+            return_value="from mod import foo\n",
+        ), patch("modules.propagate_module_io_change._emit_dependency_substep") as emit_sub, patch(
+            "modules.propagate_module_io_change._maybe_start_parent_dependency"
+        ) as emit_parent:
+            result = propagate_module_io_change(
+                "pkg/mod.py",
+                before,
+                after,
+                batch_id="batch-1",
+                progress_state={"parent_started": False, "llm_started": False},
+            )
+        self.assertTrue(result["changed"])
+        self.assertTrue(result.get("llm_used"))
+        self.assertEqual(result.get("implement_calls"), 1)
+        implement_calls = [
+            call for call in emit_sub.call_args_list
+            if len(call.args) > 3 and call.args[3] == "dependency_implement"
+        ]
+        self.assertEqual(len(implement_calls), 2)
+        self.assertEqual(implement_calls[0].args[2], "running")
+        self.assertEqual(implement_calls[1].args[2], "done")
+        self.assertTrue(
+            any(
+                c.args[0] == "batch-1" and c.args[1] == "pkg/mod.py"
+                for c in emit_parent.call_args_list
+            )
+        )
+
+    def test_flush_emits_parent_only_when_llm_used(self):
+        run_state = RunState(task="demo")
+        queue_dependency_cascade(run_state, "pkg/mod.py", "before")
+        with patch(
+            "modules.propagate_module_io_change.propagate_module_io_change",
+            return_value={"changed": False, "reason": "no change", "llm_used": False},
+        ), patch("job_progress.emit_turn_dependency") as emit_parent:
+            flush_dependency_cascades(
+                run_state,
+                read_cache={"pkg/mod.py": "after"},
+                batch_id="batch-1",
+            )
+        emit_parent.assert_not_called()
+
+        run_state.pending_dependency_cascades = {
+            "pkg/mod.py": {"path": "pkg/mod.py", "pre_content": "before"},
+        }
+        with patch(
+            "modules.propagate_module_io_change.propagate_module_io_change",
+            return_value={
+                "changed": True,
+                "llm_used": True,
+                "review_called": 0,
+                "implement_calls": 1,
+                "dependents": ["app/use_foo.py"],
+                "updates": [{"path": "app/use_foo.py", "success": True}],
+            },
+        ), patch("job_progress.emit_turn_dependency") as emit_parent:
+            flush_dependency_cascades(
+                run_state,
+                read_cache={"pkg/mod.py": "after"},
+                batch_id="batch-1",
+            )
+        self.assertEqual(
+            [call.args[1] for call in emit_parent.call_args_list],
+            ["running", "done"],
+        )
 
     def test_execute_api_plan_flushes_dependency_cascade_at_end_of_turn(self):
         import modules.execute_api_plan as plan_module

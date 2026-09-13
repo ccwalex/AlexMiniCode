@@ -205,6 +205,7 @@ def _run_readonly(task, role, files, timeout_seconds, session_id=None):
     system_prompt = (
         "You are a read-only subagent. Complete only the delegated analysis task. "
         "Do not propose tool calls, execute commands, modify files, or delegate work. "
+        "Be concise: use minimal output length, no aesthetic padding, no preamble or recap. "
         "Return a concise, self-contained result for the parent planner."
     )
     user_parts = [f"<delegated_task>\n{task}\n</delegated_task>"]
@@ -274,7 +275,8 @@ def _run_process(task, role, files, timeout_seconds):
         "</delegated_task>",
         "<delegation_rules>",
         "Complete this task independently. Do not delegate to another subagent.",
-        "End with /done whose summary is a concise result for the parent planner.",
+        "Be concise: use minimal output length; do not write for aesthetics.",
+        "End with /done whose summary is a brief, minimal result for the parent planner.",
         "</delegation_rules>",
     ]
     if file_context:

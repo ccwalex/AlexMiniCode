@@ -54,10 +54,20 @@ def build_prompt_v2(
     principles = safe_read("agent_memory/core/principles.md")
     memory = safe_read("agent_memory/reasoning/llm_memory.json")
     subagent_doc = ""
+    subagent_output_rules = ""
     try:
         subagent_depth = max(0, int(os.environ.get("AGENT_SUBAGENT_DEPTH", "0") or 0))
     except Exception:
         subagent_depth = 0
+    if subagent_depth >= 1:
+        subagent_output_rules = """
+<output_style_rules>
+- You are running as a delegated subagent. Be concise.
+- Use the shortest correct answer; do not pad for aesthetics.
+- /done summaries and any text you produce should be minimal length.
+- Omit preamble, recap, and decorative formatting unless the task requires it.
+</output_style_rules>
+"""
     if subagent_depth == 0:
         subagent_doc = """
 5. /subagent
@@ -410,6 +420,7 @@ Rules:
 - Standing memory and previous problems are background only; explicit current task requirements take priority.
 </context_handling_rules>
 
+{subagent_output_rules}
 <delegation_rules>
 - Subagents are the preferred way to inspect or review many files without bloating parent context.
 - When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to readonly explore/review subagents first.
