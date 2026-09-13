@@ -130,7 +130,11 @@ class CFG:
     @classmethod
     def as_dict(cls) -> dict:
         return {
-            "OPENCODE_GO_BASE_URL": cls.OPENCODE_GO_BASE_URL,
+            "OPENCODE_GO_BASE_URL": getattr(
+                cls,
+                "OPENCODE_GO_BASE_URL",
+                "https://opencode.ai/zen/go/v1",
+            ),
             "AGENT_VERSION": cls.AGENT_VERSION,
             "PROJECT_ROOT": cls.PROJECT_ROOT,
             "RUNS_DIR": cls.RUNS_DIR,

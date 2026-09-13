@@ -11,15 +11,12 @@ import re
 import time
 from typing import Any
 
-from cfg import CFG
-
 MODULE_METADATA = {
     "name": "opencode_registry",
     "type": "function",
     "description": "Resolve OpenCode Go model transports and fetch merged model catalog.",
 }
 
-OPENCODE_GO_BASE = CFG.OPENCODE_GO_BASE_URL
 DEFAULT_OPENCODE_MODEL = "deepseek-v4-flash"
 MODELS_API_URL = "https://models.opencode.ai/api.json"
 

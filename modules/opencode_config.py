@@ -4,7 +4,7 @@ Persist OpenCode Go settings for the web GUI.
 An empty saved API key is valid: runtime checks OPENCODE_API_KEY /
 OPENCODE_ZEN_API_KEY in the environment, and falls back to a silent dummy
 credential when none are configured. Base URL resolves from OPENCODE_GO_BASE_URL
-when set, otherwise CFG.OPENCODE_GO_BASE_URL.
+when set, otherwise the built-in OpenCode Go default endpoint.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from cfg import CFG
 
 DUMMY_OPENCODE_API_KEY = "dummy-not-configured"
 DUMMY_OPENCODE_BASE_URL = "http://127.0.0.1:0/opencode-dummy"
+DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 _OPENCODE_API_KEY_ENV_VARS = ("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY")
 _OPENCODE_BASE_URL_ENV_VAR = "OPENCODE_GO_BASE_URL"
 
@@ -129,7 +130,9 @@ def get_opencode_base_url() -> str:
     env = os.environ.get(_OPENCODE_BASE_URL_ENV_VAR, "").strip()
     if env:
         return env.rstrip("/")
-    cfg_default = str(getattr(CFG, "OPENCODE_GO_BASE_URL", "") or "").strip()
+    cfg_default = str(
+        getattr(CFG, "OPENCODE_GO_BASE_URL", DEFAULT_OPENCODE_GO_BASE_URL) or DEFAULT_OPENCODE_GO_BASE_URL
+    ).strip()
     return cfg_default.rstrip("/") if cfg_default else DUMMY_OPENCODE_BASE_URL
 
 
