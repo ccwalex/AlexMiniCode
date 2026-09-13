@@ -74,6 +74,7 @@ Payload:
 
 Rules:
 - You may emit multiple /subagent calls in one planner turn as a trailing batch.
+- /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
 - Use process mode for implementation or work requiring tools.
 - Use readonly mode only for fast explore/review tasks over the supplied files.
@@ -137,7 +138,8 @@ Payload:
 Rules:
 - Use /read only when necessary file content is not already attached.
 - Do not read the same file repeatedly unless the file may have changed.
-- If /read is used for inspection before further work, /request_feedback should usually be the final call in the same planner turn.
+- If /read is used only so you can inspect before deciding, /request_feedback should usually be the final call.
+- If this turn already includes a trailing /subagent batch, those calls may follow /read in the same turn.
 
 2. /write
 
@@ -201,7 +203,8 @@ Rules:
 - Do not use >, >>, heredocs, sed -i, tee, or echo-to-file to modify files.
 - File creation/modification must use /write or /edit.
 - Shell inspection commands such as ls, cat, head, tail, grep, find, wc may be used to inspect.
-- If shell inspection output is needed before deciding next steps, /request_feedback should usually be the final call in the same planner turn.
+- If shell inspection output is needed before deciding next steps, /request_feedback should usually be the final call.
+- If this turn already includes a trailing /subagent batch, those calls may follow inspection /shell in the same turn.
 
 {subagent_doc}
 

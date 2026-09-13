@@ -495,6 +495,40 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("<subagent_result>", feedback)
         self.assertIn("reviewed", feedback)
 
+    def test_execute_plan_continues_through_write_when_subagent_remains(self):
+        import modules.execute_api_plan as plan_module
+
+        calls = [
+            {"url": "/read", "payload": {"path": "a.py"}},
+            {"url": "/write", "payload": {"path": "b.py", "content": "x"}},
+            {"url": "/subagent", "payload": {"task": "review", "role": "review", "mode": "readonly"}},
+        ]
+        seen = []
+
+        def fake_execute(call, **kwargs):
+            seen.append(call["url"])
+            url = call["url"]
+            return {
+                "success": True,
+                "url": url,
+                "payload": call["payload"],
+                "output": (
+                    {"subagent_result": {"success": True, "summary": "ok"}}
+                    if url == "/subagent"
+                    else {"ok": True}
+                ),
+                "error": None,
+                "done": False,
+                "conflict": False,
+                "request_feedback": url in {"/read", "/subagent"},
+            }
+
+        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute):
+            result = plan_module.execute_api_plan(calls)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["status"], "request_feedback")
+        self.assertEqual(seen, ["/read", "/write", "/subagent"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -544,15 +544,28 @@ def execute_api_call(
 
         if url == "/subagent":
             pre_cache = dict(read_cache) if isinstance(read_cache, dict) else {}
+            mode = payload.get("mode", "process")
+            role = payload.get("role", "explore")
+            print(
+                f"[Subagent] start mode={mode} role={role} "
+                f"task={str(payload.get('task') or '')[:200]!r}",
+                flush=True,
+            )
             subagent_result = run_subagent(
                 task=payload.get("task"),
-                role=payload.get("role", "explore"),
-                mode=payload.get("mode", "process"),
+                role=role,
+                mode=mode,
                 files=payload.get("files", []),
                 timeout_seconds=payload.get("timeout_seconds", 600),
             )
+            print(
+                f"[Subagent] done mode={mode} role={role} "
+                f"success={subagent_result.get('success')} status={subagent_result.get('status')} "
+                f"error={str(subagent_result.get('error') or '')[:300]!r}",
+                flush=True,
+            )
             cascades = []
-            if payload.get("mode", "process") == "process":
+            if mode == "process":
                 for artifact in list(subagent_result.get("artifacts") or []):
                     art = str(artifact or "").strip()
                     if not art:

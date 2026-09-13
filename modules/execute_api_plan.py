@@ -130,11 +130,23 @@ def execute_api_plan(
         batch_results = None
         if len(batch) >= 2 and all(_subagent_mode(item) == "readonly" for item in batch):
             specs = [item.get("payload") or {} for item in batch]
+            print(f"[Subagent] start parallel readonly n={len(batch)}", flush=True)
             child_results = run_readonly_subagents_parallel(specs)
             batch_results = [
                 _wrap_subagent_plan_result(item, child)
                 for item, child in zip(batch, child_results)
             ]
+            for item, child in zip(batch, child_results):
+                payload = item.get("payload") if isinstance(item, dict) else {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                child = child if isinstance(child, dict) else {}
+                print(
+                    f"[Subagent] done mode=readonly role={payload.get('role', 'explore')} "
+                    f"success={child.get('success')} status={child.get('status')} "
+                    f"error={str(child.get('error') or '')[:300]!r}",
+                    flush=True,
+                )
 
         if batch_results is not None:
             for item, result in zip(batch, batch_results):
@@ -200,19 +212,26 @@ def execute_api_plan(
             current_url = result.get("url")
             next_call = calls[index + 1] if index + 1 < len(calls) else None
             next_url = next_call.get("url") if isinstance(next_call, dict) else None
+            remaining_urls = [
+                item.get("url")
+                for item in calls[index + 1 :]
+                if isinstance(item, dict)
+            ]
 
             # Batch consecutive reads before returning their merged file_context.
-            # A trailing /subagent batch after /read or inspection /shell must also
-            # finish before feedback returns; otherwise the parent prints
-            # [Request Feedback Triggered] with no subagent_result.
+            # If a trailing /subagent batch remains, finish every call before it
+            # (including /write or /scratchpad) so feedback includes subagent_result.
             # The explicit /request_feedback endpoint may follow the final read or subagent.
-            if current_url == "/read" and next_url in {"/read", "/subagent", "/request_feedback"}:
+            if "/subagent" in remaining_urls:
                 index += 1
                 continue
-            if current_url == "/shell" and next_url in {"/read", "/subagent", "/request_feedback"}:
+            if current_url == "/read" and next_url in {"/read", "/request_feedback"}:
                 index += 1
                 continue
-            if current_url == "/subagent" and next_url in {"/subagent", "/request_feedback"}:
+            if current_url == "/shell" and next_url in {"/read", "/request_feedback"}:
+                index += 1
+                continue
+            if current_url == "/subagent" and next_url == "/request_feedback":
                 index += 1
                 continue
 
