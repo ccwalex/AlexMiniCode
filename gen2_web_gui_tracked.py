@@ -712,6 +712,32 @@ def job_logs(jid):
     d=job_dir(jid)
     if not d.exists(): raise FileNotFoundError('job not found')
     return {'job_id':safe_job_id(jid),'stdout':tail(d/'stdout.log',50000),'stderr':tail(d/'stderr.log',20000)}
+def job_progress(jid):
+    d=job_dir(jid)
+    if not d.exists(): raise FileNotFoundError('job not found')
+    ensure_module_path()
+    from job_progress import parse_steps_jsonl, build_snapshot
+    steps_path=d/'steps.jsonl'
+    text=''
+    if steps_path.exists():
+        text=steps_path.read_text(encoding='utf-8',errors='replace')
+    events=parse_steps_jsonl(text, max_lines=2000)
+    snap=build_snapshot(events)
+    active_batch_id=None
+    batches=snap.get('batches') or {}
+    for batch_id, batch in batches.items():
+        status=str((batch or {}).get('status') or '')
+        if status not in {'done','failed','request_feedback'}:
+            active_batch_id=batch_id
+    if active_batch_id is None and batches:
+        active_batch_id=list(batches.keys())[-1]
+    return {
+        'job_id':safe_job_id(jid),
+        'snapshot':snap.get('snapshot') or [],
+        'batches':batches,
+        'active_batch_id':active_batch_id,
+        'updated_at':now(),
+    }
 def tick(): refresh_current(); s=start_next(); return {'queue':load_queue(),'current':load_current(),'started':s}
 # subagent API (for calling gen2 from another agent)
 def subagent_status():
@@ -1037,6 +1063,7 @@ class Handler(BaseHTTPRequestHandler):
             parts=[p for p in path.split('/') if p]
             if len(parts)==3 and parts[:2]==['api','job']: return jresp(self,job_payload(parts[2]))
             if len(parts)==4 and parts[:2]==['api','job'] and parts[3]=='logs': return jresp(self,job_logs(parts[2]))
+            if len(parts)==4 and parts[:2]==['api','job'] and parts[3]=='progress': return jresp(self,job_progress(parts[2]))
             return jresp(self,{'error':'not found'},404)
         except Exception as e: return jresp(self,{'error':str(e)},500)
     def do_POST(self):

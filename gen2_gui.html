@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Gen2 Agent</title>
 <style>
-:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d}
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui}
 .topbar{display:flex;align-items:center;gap:12px;padding:12px 12px 0}
 .topbar h1{margin:0;font-size:20px}
@@ -30,7 +30,19 @@ button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;bord
 .item,.job{padding:6px;border-bottom:1px solid var(--border);font-size:12px}
 .dir{margin-left:12px}
 .muted,.small{color:var(--muted);font-size:12px}
-.logs{height:calc(100vh - 240px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
+.plan-progress{max-height:220px;overflow:auto;background:#0a0e12;border:1px solid var(--border);border-radius:8px;padding:8px;font-family:monospace;font-size:12px;margin-bottom:8px}
+.plan-batch{font-size:11px;color:var(--muted);padding:4px 0 6px;border-bottom:1px solid #1a222c;margin-bottom:4px}
+.plan-step{display:grid;grid-template-columns:2.5em 12px 1fr minmax(0,42%);gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid #141a22}
+.plan-step.substep{grid-template-columns:2.5em 12px 1fr minmax(0,42%);padding-left:12px;opacity:.92}
+.plan-step.parallel{border-left:2px solid var(--progress-running);padding-left:8px;margin-left:4px}
+.step-badge{width:10px;height:10px;border-radius:2px;display:inline-block}
+.badge-planned{background:var(--progress-planned)}
+.badge-running{background:var(--progress-running)}
+.badge-done{background:var(--good)}
+.badge-meta{background:var(--good)}
+.badge-failed{background:var(--bad)}
+.step-detail{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.logs{height:calc(100vh - 460px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
 .selected{background:var(--panel2)}
 .status-completed{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--accent)}.status-queued{color:#f4d03f}
 .disc-app{display:grid;grid-template-columns:320px 1fr;gap:12px;min-height:calc(100vh - 80px)}
@@ -135,6 +147,8 @@ Do not allow shell redirection for file writes.</textarea>
 <div id="jobs" class="box"></div>
 <h2 id="selectedTitle">No job selected</h2>
 <div id="selectedMeta" class="small"></div>
+<h3>Plan Progress</h3>
+<div id="planProgress" class="plan-progress muted">Select a job to see live step progress.</div>
 <h3>Logs</h3>
 <div id="logs" class="logs">Select a job.</div>
 </div>
@@ -684,7 +698,68 @@ async function refreshEverything(){try{await api('/api/tick',{method:'POST'})}ca
 async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
 async function loadJobs(){const arr=await api('/api/jobs');jobs.innerHTML=arr.map(j=>`<div class="job ${j.job_id===selectedJob?'selected':''}" onclick="selectJob('${esc(j.job_id)}')"><b>${esc(j.job_id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`).join('')||'<div class="job">No jobs.</div>'}
 async function selectJob(id){selectedJob=id;await loadJobs();await loadJob(id)}
-async function loadJob(id){const d=await api('/api/job/'+encodeURIComponent(id));const l=await api('/api/job/'+encodeURIComponent(id)+'/logs');const s=d.status||{};selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';selectedMeta.textContent=s.reason||'';logs.textContent='=== STDOUT ===\n'+(l.stdout||'')+'\n\n=== STDERR ===\n'+(l.stderr||'')}
+let progressUserScrolled=false;
+const planProgressEl=document.getElementById('planProgress');
+planProgressEl.addEventListener('scroll',()=>{const el=planProgressEl;progressUserScrolled=el.scrollTop+el.clientHeight<el.scrollHeight-24});
+function progressBadgeClass(row){
+  const status=String(row.status||'');
+  const phase=String(row.phase||'');
+  if(phase==='writing_meta') return status==='done'?'badge-meta':'badge-meta';
+  if(['failed','timeout'].includes(status)) return 'badge-failed';
+  if(['done','skipped'].includes(status)) return 'badge-done';
+  if(['running','started','verifying','repairing','shell'].includes(status)||['verifying','repairing','shell'].includes(phase)) return 'badge-running';
+  return 'badge-planned';
+}
+function progressRowLabel(row){
+  const phase=String(row.phase||'');
+  if(phase==='writing_meta') return 'writing meta';
+  if(phase==='verifying') return 'verifying';
+  if(phase==='repairing') return 'repairing';
+  if(phase==='shell') return 'shell';
+  return String(row.label||row.action||row.url||'step');
+}
+function renderPlanProgress(progress){
+  const snapshot=progress?.snapshot||[];
+  const batches=progress?.batches||{};
+  const activeBatch=progress?.active_batch_id;
+  if(!snapshot.length){
+    planProgressEl.innerHTML='<div class="muted">No structured step progress yet. Long waits may be planner LLM, verify/repair, shell, or subagent work.</div>';
+    return;
+  }
+  const filtered=activeBatch?snapshot.filter(r=>String(r.batch_id||'')===activeBatch):snapshot;
+  const batchMeta=batches[activeBatch]||null;
+  let html='';
+  if(batchMeta){
+    const iter=batchMeta.iteration!=null?` iteration ${batchMeta.iteration}`:'';
+    const kind=batchMeta.kind||'main';
+    const total=batchMeta.total_steps!=null?` · ${batchMeta.total_steps} steps`:'';
+    html+=`<div class="plan-batch">${esc(activeBatch||'batch')}${iter} · ${esc(kind)}${esc(total)} · ${esc(batchMeta.status||'running')}</div>`;
+  }
+  const rows=filtered.length?filtered:snapshot;
+  for(const row of rows){
+    const isSub=row.event==='substep'||!!row.phase;
+    const idx=row.index!=null?`[${row.index}]`:'';
+    const badge=progressBadgeClass(row);
+    const label=progressRowLabel(row);
+    const detail=String(row.detail||row.error||'');
+    const parallel=row.parallel_group?` parallel ${esc(row.parallel_group)}`:'';
+    html+=`<div class="plan-step${isSub?' substep':''}${row.parallel_group?' parallel':''}"><span>${idx}</span><span class="step-badge ${badge}"></span><span>${esc(label)}</span><span class="step-detail" title="${esc(detail)}">${esc(detail)}</span></div>`;
+  }
+  planProgressEl.innerHTML=html||'<div class="muted">Waiting for plan steps...</div>';
+  if(!progressUserScrolled) planProgressEl.scrollTop=planProgressEl.scrollHeight;
+}
+async function loadJob(id){
+  const [d,l,p]=await Promise.all([
+    api('/api/job/'+encodeURIComponent(id)),
+    api('/api/job/'+encodeURIComponent(id)+'/logs'),
+    api('/api/job/'+encodeURIComponent(id)+'/progress').catch(()=>({snapshot:[],batches:{}}))
+  ]);
+  const s=d.status||{};
+  selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';
+  selectedMeta.textContent=s.reason||'';
+  renderPlanProgress(p);
+  logs.textContent='=== STDOUT ===\n'+(l.stdout||'')+'\n\n=== STDERR ===\n'+(l.stderr||'');
+}
 async function loadTracked(){const d=await api('/api/tracked_folders');tracked.innerHTML=(d.folders||[]).map(f=>`<div class="item"><b>${esc(f.folder_path)}</b> [${esc(f.code_type)}]<div class="muted">${esc(f.metadata_path)}</div><button class="secondary" onclick="removeTracked('${esc(f.folder_path)}')">remove</button></div>`).join('')||'<div class="muted">No tracked folders.</div>';await loadRegistryContexts()}
 async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}
 async function removeTracked(p){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:p})}),null,2);await loadTracked()}

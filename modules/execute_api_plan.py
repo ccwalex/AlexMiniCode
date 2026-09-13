@@ -22,6 +22,7 @@ MODULE_METADATA = {
 from execute_api_call import execute_api_call
 from run_state import RunState
 from subagent_runner import run_readonly_subagents_parallel
+from job_progress import emit_batch, emit_plan, emit_step, label_for_call, log_step
 
 
 VALID_STATUSES = {
@@ -86,6 +87,9 @@ def execute_api_plan(
     shell_instruction_prompt="",
     scratchpad=None,
     mark_task_done=True,
+    batch_id=None,
+    iteration=None,
+    batch_kind="main",
 ):
     """
     Execute a normalized list of Gen2 API calls.
@@ -119,28 +123,69 @@ def execute_api_plan(
 
     results = []
     index = 0
+    total_steps = len(calls)
+
+    if batch_id:
+        emit_plan(batch_id, calls)
+        emit_batch(batch_id, "started", iteration=iteration, kind=batch_kind, total_steps=total_steps)
 
     while index < len(calls):
         call = calls[index]
+        step_label = label_for_call(call) if isinstance(call, dict) else "step"
         batch = (
             _consecutive_subagent_calls(calls, index)
             if isinstance(call, dict) and call.get("url") == "/subagent"
             else []
         )
+        parallel_readonly_batch = (
+            len(batch) >= 2 and all(_subagent_mode(item) == "readonly" for item in batch)
+        )
+        if not parallel_readonly_batch:
+            if batch_id:
+                emit_step(batch_id, index, call, "running")
+            log_step(f"[Gen2 Step {index + 1}/{total_steps}] {step_label} (started)")
         batch_results = None
-        if len(batch) >= 2 and all(_subagent_mode(item) == "readonly" for item in batch):
+        if parallel_readonly_batch:
             specs = [item.get("payload") or {} for item in batch]
+            parallel_group = f"readonly-{index}"
             print(f"[Subagent] start parallel readonly n={len(batch)}", flush=True)
+            if batch_id:
+                for offset, item in enumerate(batch):
+                    emit_step(
+                        batch_id,
+                        index + offset,
+                        item,
+                        "running",
+                        parallel_group=parallel_group,
+                    )
+                    log_step(
+                        f"[Gen2 Step {index + offset + 1}/{total_steps}] "
+                        f"{label_for_call(item)} (started, parallel)"
+                    )
             child_results = run_readonly_subagents_parallel(specs)
             batch_results = [
                 _wrap_subagent_plan_result(item, child)
                 for item, child in zip(batch, child_results)
             ]
-            for item, child in zip(batch, child_results):
+            for offset, (item, child) in enumerate(zip(batch, child_results)):
                 payload = item.get("payload") if isinstance(item, dict) else {}
                 if not isinstance(payload, dict):
                     payload = {}
                 child = child if isinstance(child, dict) else {}
+                if batch_id:
+                    child_status = "done" if child.get("success") else "failed"
+                    emit_step(
+                        batch_id,
+                        index + offset,
+                        item,
+                        child_status,
+                        parallel_group=parallel_group,
+                        error=str(child.get("error") or ""),
+                    )
+                    log_step(
+                        f"[Gen2 Step {index + offset + 1}/{total_steps}] "
+                        f"{label_for_call(item)} ({child_status}, parallel)"
+                    )
                 print(
                     f"[Subagent] done mode=readonly role={payload.get('role', 'explore')} "
                     f"success={child.get('success')} status={child.get('status')} "
@@ -164,6 +209,8 @@ def execute_api_plan(
                     shell_instruction_prompt=shell_instruction_prompt,
                     scratchpad=scratchpad,
                     mark_task_done=mark_task_done,
+                    batch_id=batch_id,
+                    step_index=index,
                 )
             except Exception as e:
                 result = {
@@ -180,7 +227,22 @@ def execute_api_plan(
             results.append(result)
             _record_plan_result(run_state, call, result)
 
+        step_status = "done" if result.get("success") else "failed"
+        if batch_id and batch_results is None:
+            emit_step(
+                batch_id,
+                index,
+                call,
+                step_status,
+                error=str(result.get("error") or ""),
+            )
+        log_step(
+            f"[Gen2 Step {index + 1}/{total_steps}] {step_label} ({step_status})"
+        )
+
         if not result.get("success"):
+            if batch_id:
+                emit_batch(batch_id, "failed", iteration=iteration, kind=batch_kind, total_steps=total_steps)
             if hasattr(run_state, "add_error"):
                 try:
                     run_state.add_error(
@@ -241,6 +303,14 @@ def execute_api_plan(
             if isinstance(output, dict):
                 feedback = output
 
+            if batch_id:
+                emit_batch(
+                    batch_id,
+                    "request_feedback",
+                    iteration=iteration,
+                    kind=batch_kind,
+                    total_steps=total_steps,
+                )
             return {
                 "success": True,
                 "status": "request_feedback",
@@ -269,6 +339,8 @@ def execute_api_plan(
                 except Exception:
                     pass
 
+            if batch_id:
+                emit_batch(batch_id, "failed", iteration=iteration, kind=batch_kind, total_steps=total_steps)
             return {
                 "success": False,
                 "status": "failed",
@@ -285,6 +357,8 @@ def execute_api_plan(
             }
 
         if result.get("done"):
+            if batch_id:
+                emit_batch(batch_id, "done", iteration=iteration, kind=batch_kind, total_steps=total_steps)
             return {
                 "success": True,
                 "status": "done",
@@ -301,6 +375,8 @@ def execute_api_plan(
 
         index += 1
 
+    if batch_id:
+        emit_batch(batch_id, "completed", iteration=iteration, kind=batch_kind, total_steps=total_steps)
     return {
         "success": True,
         "status": "completed",
@@ -328,6 +404,8 @@ if __name__ == "__main__":
         shell_instruction_prompt="",
         scratchpad=None,
         mark_task_done=True,
+        batch_id=None,
+        step_index=None,
     ):
         url = call.get("url")
         payload = call.get("payload", {})

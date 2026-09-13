@@ -11,6 +11,7 @@ import traceback
 from repair_write_step import repair_write_step
 from scratchpad import execute_scratchpad
 from render_file_context import drop_read_cache
+from job_progress import emit_substep
 from conflict import execute_conflict
 from subagent_runner import run_subagent
 from propagate_module_io_change import propagate_module_io_change, snapshot_pre_content
@@ -181,6 +182,15 @@ def _record_cache_drop(run_state, dropped, missing, remaining):
         )
 
 
+def _progress_substep(batch_id, step_index, call, phase, status, detail=""):
+    if not batch_id or step_index is None:
+        return
+    try:
+        emit_substep(batch_id, step_index, call, phase, status, detail)
+    except Exception:
+        pass
+
+
 def execute_api_call(
     call,
     run_state=None,
@@ -188,6 +198,8 @@ def execute_api_call(
     shell_instruction_prompt="",
     scratchpad=None,
     mark_task_done=True,
+    batch_id=None,
+    step_index=None,
 ):
     if read_cache is None:
         read_cache = {}
@@ -281,7 +293,16 @@ def execute_api_call(
 
             pre_content = snapshot_pre_content(path, read_cache)
 
+            _progress_substep(batch_id, step_index, call, "verifying", "running", path)
             v_res = verify_write(path, content, use_llm=True)
+            _progress_substep(
+                batch_id,
+                step_index,
+                call,
+                "verifying",
+                "done" if isinstance(v_res, dict) and v_res.get("approved") else "failed",
+                path,
+            )
 
             _record_verifier_decision(run_state, "write", path, v_res)
 
@@ -299,7 +320,15 @@ def execute_api_call(
             
                 while not status:
                     repair_attempt += 1
-            
+                    _progress_substep(
+                        batch_id,
+                        step_index,
+                        call,
+                        "repairing",
+                        "running",
+                        f"{path} attempt {repair_attempt}",
+                    )
+
                     repair = repair_write_step(
                         
                             path,
@@ -338,7 +367,11 @@ def execute_api_call(
                         )
             
                     if not status and repair_attempt >= 3:
+                        _progress_substep(batch_id, step_index, call, "repairing", "failed", path)
                         return result
+
+            if repair_attempt:
+                _progress_substep(batch_id, step_index, call, "repairing", "done", path)
 
             verified_content = v_res.get(
                 "content",
@@ -365,10 +398,12 @@ def execute_api_call(
 
             read_cache[path] = verified_content
 
+            _progress_substep(batch_id, step_index, call, "writing_meta", "running", path)
             refresh_res = refresh_after_file_change(
                 path,
                 run_state=run_state,
             )
+            _progress_substep(batch_id, step_index, call, "writing_meta", "done", path)
             cascade = propagate_module_io_change(
                 path,
                 pre_content=pre_content,
@@ -420,6 +455,7 @@ def execute_api_call(
 
             pre_content = snapshot_pre_content(path, read_cache)
 
+            _progress_substep(batch_id, step_index, call, "verifying", "running", path)
             try:
                 edit_res = edit_file(path, edit_fns)
             except Exception as e:
@@ -475,17 +511,22 @@ def execute_api_call(
             )
 
             if not edit_success:
+                _progress_substep(batch_id, step_index, call, "verifying", "failed", path)
                 result["error"] = edit_reason
                 result["output"] = edit_res
                 return result
 
+            _progress_substep(batch_id, step_index, call, "verifying", "done", path)
+
             if "reconstructed_source" in edit_res and edit_res["reconstructed_source"] is not None:
                 read_cache[path] = edit_res["reconstructed_source"]
 
+            _progress_substep(batch_id, step_index, call, "writing_meta", "running", path)
             refresh_res = refresh_after_file_change(
                 path,
                 run_state=run_state,
             )
+            _progress_substep(batch_id, step_index, call, "writing_meta", "done", path)
             post_content = edit_res.get("reconstructed_source")
             if post_content is None:
                 post_content = read_cache.get(path)
@@ -529,7 +570,16 @@ def execute_api_call(
             final_cmd = s_res.get("command") or cmd
             run_id = getattr(run_state, "run_id", "default_run_id") if run_state else "default_run_id"
 
+            _progress_substep(batch_id, step_index, call, "shell", "running", final_cmd)
             success, output = run_shell(final_cmd, run_id)
+            _progress_substep(
+                batch_id,
+                step_index,
+                call,
+                "shell",
+                "done" if success else "failed",
+                final_cmd,
+            )
 
             _record_shell(
                 run_state,

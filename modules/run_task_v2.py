@@ -24,6 +24,7 @@ MODULE_METADATA = {
 }
 
 import json
+import time
 
 from cfg import CFG
 from ensure_memory_files import ensure_memory_files
@@ -487,6 +488,8 @@ def _run_task_v2(
             continue
 
         try:
+            print(f"[Gen2 Planner] iteration={iteration} calling LLM...", flush=True)
+            planner_started = time.time()
             raw = _call_planner_llm(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -495,6 +498,11 @@ def _run_task_v2(
                 effort=effort,
                 llm_source=llm_source,
                 cursor_params=cursor_params,
+            )
+            print(
+                f"[Gen2 Planner] iteration={iteration} LLM returned in "
+                f"{time.time() - planner_started:.1f}s",
+                flush=True,
             )
         except Exception as e:
             reason = f"planner LLM call failed: {str(e)}"
@@ -544,6 +552,9 @@ def _run_task_v2(
             shell_instruction_prompt=shell_instruction_prompt,
             scratchpad=main_scratchpad,
             mark_task_done=False,
+            batch_id=f"iter-{iteration}-main",
+            iteration=iteration,
+            batch_kind="main",
         )
         read_cache = execution_result.get("read_cache", read_cache)
 
@@ -691,6 +702,7 @@ def _run_task_v2(
                     module_registry=module_registry_block,
                     code_tables=attached_code_tables,
                     attached_paths=attached_paths,
+                    main_iteration=iteration,
                 )
 
                 outputs += "\n[execute_debug_v2]\n"
@@ -791,8 +803,10 @@ def _run_task_v2(
                 resume_result = None
                 resume_status = None
                 resume_needs_replan = False
+                resume_batch = 0
 
                 while pending_resume_calls:
+                    resume_batch += 1
                     resume_result = execute_api_plan(
                         calls=pending_resume_calls,
                         run_state=run_state,
@@ -800,6 +814,9 @@ def _run_task_v2(
                         shell_instruction_prompt=shell_instruction_prompt,
                         scratchpad=main_scratchpad,
                         mark_task_done=False,
+                        batch_id=f"iter-{iteration}-resume-{resume_batch}",
+                        iteration=iteration,
+                        batch_kind="resume",
                     )
                     read_cache = resume_result.get("read_cache", read_cache)
 

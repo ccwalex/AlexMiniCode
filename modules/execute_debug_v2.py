@@ -174,6 +174,7 @@ def execute_debug_v2(
     module_registry="",
     code_tables=None,
     attached_paths=None,
+    main_iteration=None,
 ):
     if run_state is None:
         run_state = RunState(task=task)
@@ -285,6 +286,7 @@ def execute_debug_v2(
         plan = parse_res.get("calls", [])
         _print_debug_plan(plan)
 
+        parent_iter = main_iteration if main_iteration is not None else "x"
         exec_res = execute_api_plan(
             calls=plan,
             run_state=run_state,
@@ -292,6 +294,9 @@ def execute_debug_v2(
             shell_instruction_prompt=shell_instruction_prompt,
             scratchpad=debug_scratchpad,
             mark_task_done=False,
+            batch_id=f"iter-{parent_iter}-debug-{i + 1}",
+            iteration=main_iteration,
+            batch_kind="debug",
         )
 
         run_state = exec_res.get("run_state", run_state)

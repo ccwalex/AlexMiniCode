@@ -148,6 +148,20 @@ def run_job(job_dir):
             print(f"[JOB START] {job_dir}")
             print(f"[TASK] {task}")
 
+            os.environ["GEN2_JOB_DIR"] = str(job_dir)
+            try:
+                from modules.job_progress import emit
+
+                emit(
+                    {
+                        "event": "job",
+                        "status": "started",
+                        "job_id": job_dir.name,
+                    }
+                )
+            except Exception:
+                pass
+
             result = run_task_v2(
                 task=task,
                 max_tokens=config.get("max_tokens"),
