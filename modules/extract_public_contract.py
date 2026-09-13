@@ -27,6 +27,7 @@ import ast
 import json
 import re
 
+from extract_module_metadata_from_content import extract_module_metadata_from_content
 from infer_code_type import infer_code_type
 
 
@@ -52,6 +53,36 @@ def _py_func_sig(node, skip_self=False):
         "returns": _ann(node.returns),
         "async": isinstance(node, ast.AsyncFunctionDef),
     }
+
+
+def _python_primary_export_name(content):
+    meta, _err = extract_module_metadata_from_content(content)
+    if isinstance(meta, dict):
+        name = meta.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
+def _typescript_primary_export_name(exports):
+    if not exports:
+        return None
+    if "default" in exports:
+        return "default"
+    callable_names = [
+        name
+        for name, spec in exports.items()
+        if name != "__types__" and isinstance(spec, dict) and spec.get("kind") == "function"
+    ]
+    if len(callable_names) == 1:
+        return callable_names[0]
+    return None
+
+
+def _filter_exports(exports, primary_name):
+    if not primary_name or primary_name not in exports:
+        return exports
+    return {primary_name: exports[primary_name]}
 
 
 def _extract_python(content):
@@ -170,6 +201,8 @@ def extract_public_contract(path, content, code_type=None):
         "plausible": False,
         "exports": {},
         "outputs": {},
+        "primary_name": None,
+        "raw_export_count": 0,
         "error": None,
     }
     if not text.strip():
@@ -178,8 +211,10 @@ def extract_public_contract(path, content, code_type=None):
     try:
         if kind == "py":
             exports = _extract_python(text)
+            primary_name = _python_primary_export_name(text)
         elif kind in {"ts", "react"}:
             exports = _extract_typescript(text)
+            primary_name = _typescript_primary_export_name(exports)
         else:
             result["error"] = f"unsupported code_type: {kind}"
             return result
@@ -194,27 +229,57 @@ def extract_public_contract(path, content, code_type=None):
         result["error"] = "no public exports found"
         return result
 
-    result["exports"] = exports
-    result["outputs"] = _output_view(exports)
+    raw_export_count = len([name for name in exports if name != "__types__"])
+    scoped_exports = _filter_exports(exports, primary_name)
+    if not scoped_exports:
+        result["error"] = "no public exports found"
+        return result
+
+    result["primary_name"] = primary_name
+    result["raw_export_count"] = raw_export_count
+    result["exports"] = scoped_exports
+    result["outputs"] = _output_view(scoped_exports)
     result["plausible"] = True
     return result
+
+
+def _contract_is_ambiguous(contract):
+    if not contract.get("plausible"):
+        return True
+    raw_count = int(contract.get("raw_export_count") or 0)
+    primary_name = contract.get("primary_name")
+    if raw_count > 1 and not primary_name:
+        return True
+    if raw_count > 1 and primary_name and primary_name not in (contract.get("exports") or {}):
+        return True
+    return False
+
+
+def _multi_export_module(contract):
+    return int((contract or {}).get("raw_export_count") or 0) > 1
 
 
 def output_format_changed(before, after):
     """
     Return (changed, reason, needs_llm).
 
-    needs_llm is True when AST output types are not plausible on either side.
+    needs_llm is True when AST output types are not plausible on either side,
+    when multiple public exports make the contract ambiguous, or when a
+    multi-export module's primary output types appear to have changed.
     """
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
     if not before.get("plausible") or not after.get("plausible"):
         return False, "ast not plausible", True
+    if _contract_is_ambiguous(before) or _contract_is_ambiguous(after):
+        return False, "ambiguous public exports", True
     before_view = before.get("outputs") or {}
     after_view = after.get("outputs") or {}
     if not _has_output_types(before_view) and not _has_output_types(after_view):
         return False, "no output types in ast", True
     if json.dumps(before_view, sort_keys=True) != json.dumps(after_view, sort_keys=True):
+        if _multi_export_module(before) or _multi_export_module(after):
+            return True, "public output types changed (multi-export module)", True
         return True, "public output types changed", False
     return False, "public output types unchanged", False
 
@@ -240,4 +305,41 @@ if __name__ == "__main__":
     assert changed is False and needs_llm is False, (changed, reason, needs_llm)
     changed, reason, needs_llm = output_format_changed(before, after_changed)
     assert changed is True and needs_llm is False, (changed, reason, needs_llm)
+
+    helper_only_before = extract_public_contract(
+        "mod.py",
+        'MODULE_METADATA = {"name": "foo"}\n'
+        "def helper() -> dict:\n    return {}\n"
+        "def foo(x: int) -> dict:\n    return {}\n",
+        "py",
+    )
+    helper_only_after = extract_public_contract(
+        "mod.py",
+        'MODULE_METADATA = {"name": "foo"}\n'
+        "def helper() -> list:\n    return []\n"
+        "def foo(x: int) -> dict:\n    return {}\n",
+        "py",
+    )
+    changed, reason, needs_llm = output_format_changed(helper_only_before, helper_only_after)
+    assert changed is False and needs_llm is False, (changed, reason, needs_llm)
+    assert helper_only_before["primary_name"] == "foo"
+    assert helper_only_before["raw_export_count"] == 2
+
+    primary_changed_before = extract_public_contract(
+        "mod.py",
+        'MODULE_METADATA = {"name": "foo"}\n'
+        "def helper() -> dict:\n    return {}\n"
+        "def foo(x: int) -> dict:\n    return {}\n",
+        "py",
+    )
+    primary_changed_after = extract_public_contract(
+        "mod.py",
+        'MODULE_METADATA = {"name": "foo"}\n'
+        "def helper() -> dict:\n    return {}\n"
+        "def foo(x: int) -> list:\n    return []\n",
+        "py",
+    )
+    changed, reason, needs_llm = output_format_changed(primary_changed_before, primary_changed_after)
+    assert changed is True and needs_llm is True, (changed, reason, needs_llm)
+
     print("EXTRACT_PUBLIC_CONTRACT SELF TEST PASSED")

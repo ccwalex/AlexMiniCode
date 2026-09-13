@@ -42,6 +42,62 @@ class DependencyCascadeTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertFalse(needs_llm)
 
+    def test_helper_change_ignored_when_primary_export_unchanged(self):
+        before = extract_public_contract(
+            "mod.py",
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> list:\n    return []\n"
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        changed, _, needs_llm = output_format_changed(before, after)
+        self.assertFalse(changed)
+        self.assertFalse(needs_llm)
+
+    def test_primary_change_in_multi_export_module_needs_llm(self):
+        before = extract_public_contract(
+            "mod.py",
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> list:\n    return []\n",
+            "py",
+        )
+        changed, _, needs_llm = output_format_changed(before, after)
+        self.assertTrue(changed)
+        self.assertTrue(needs_llm)
+
+    def test_multi_export_without_metadata_is_ambiguous(self):
+        before = extract_public_contract(
+            "mod.py",
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> list:\n    return []\n",
+            "py",
+        )
+        changed, reason, needs_llm = output_format_changed(before, after)
+        self.assertFalse(changed)
+        self.assertTrue(needs_llm)
+        self.assertIn("ambiguous", reason)
+
     def test_grep_searches_project_and_skips_agent(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -70,6 +126,26 @@ class DependencyCascadeTests(unittest.TestCase):
             "modules.propagate_module_io_change.find_module_dependents"
         ) as grep, patch("modules.propagate_module_io_change.run_subagent") as llm:
             result = propagate_module_io_change("pkg/mod.py", src, src)
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["grepped"])
+        grep.assert_not_called()
+        llm.assert_not_called()
+
+    def test_helper_only_change_does_not_cascade(self):
+        before = (
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> dict:\n    return {}\n"
+            "def foo(x: int) -> dict:\n    return {}\n"
+        )
+        after = (
+            'MODULE_METADATA = {"name": "foo"}\n'
+            "def helper() -> list:\n    return []\n"
+            "def foo(x: int) -> dict:\n    return {}\n"
+        )
+        with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
+            "modules.propagate_module_io_change.find_module_dependents"
+        ) as grep, patch("modules.propagate_module_io_change.run_subagent") as llm:
+            result = propagate_module_io_change("pkg/mod.py", before, after)
         self.assertFalse(result["changed"])
         self.assertFalse(result["grepped"])
         grep.assert_not_called()
