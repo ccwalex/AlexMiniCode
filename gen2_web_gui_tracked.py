@@ -648,8 +648,10 @@ def normalize_submission(data):
         _normalize_role_entry,
     )
     planner=get_role_config('main_planner')
-    llm_source=str(data.get('llm_source') or data.get('source') or planner.get('source') or 'relay').strip().lower()
-    if llm_source not in ('relay','cursor'): llm_source=planner.get('source') or 'relay'
+    llm_source=str(data.get('llm_source') or data.get('source') or planner.get('source') or 'opencode').strip().lower()
+    if llm_source == 'relay':
+        llm_source = 'opencode'
+    if llm_source not in ('opencode','cursor'): llm_source=planner.get('source') or 'opencode'
     model=str(data.get('model') or planner.get('model') or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     effort=str(data.get('effort') or planner.get('effort') or DEFAULT_EFFORT).strip() or DEFAULT_EFFORT
     cursor_params=data.get('cursor_params') if isinstance(data.get('cursor_params'), list) else planner.get('cursor_params')
@@ -1071,7 +1073,7 @@ class Handler(BaseHTTPRequestHandler):
             q=urlparse(self.path).query
             if path=='/api/model_config/models':
                 params=parse_qs(q)
-                source=(params.get('source') or ['relay'])[0]
+                source=(params.get('source') or ['opencode'])[0]
                 return jresp(self,model_config_list_models(source))
             parts=[p for p in path.split('/') if p]
             if len(parts)==3 and parts[:2]==['api','job']: return jresp(self,job_payload(parts[2]))

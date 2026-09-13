@@ -4,6 +4,7 @@ import json
 
 from build_write_verifier_prompt import build_write_verifier_prompt
 from call_llm import call_llm_role
+from opencode_session import universal_session
 from structured_llm_retry import call_llm_role_with_parse_retry, is_valid_verifier_response
 from extract_module_metadata_from_content import extract_module_metadata_from_content
 from validate_module_metadata import validate_module_metadata
@@ -117,6 +118,7 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
                 parse_fallback_kind="verifier",
                 llm_call=call_llm_role,
                 timeout=CFG().get_timeout("verifier_call"),
+                session_id=universal_session("verifier", "write"),
             )
             
             resp_str = resp

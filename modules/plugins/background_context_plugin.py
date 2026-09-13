@@ -18,6 +18,7 @@ if _MODULES_DIR not in sys.path:
 
 from read_file import read_file
 from call_llm import call_llm_role
+from opencode_session import universal_session
 from cfg import CFG
 from parse_api_plan import extract_json_candidate, strip_code_fences
 from model_config import get_role_config
@@ -258,6 +259,7 @@ def rewrite_task(
             thinking=effort,
             model=model,
             timeout=CFG.get_timeout("background_context_call", 240),
+            session_id=universal_session("context_rewriter"),
         )
     except Exception as e:
         return {

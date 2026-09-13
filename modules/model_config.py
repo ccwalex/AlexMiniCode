@@ -36,7 +36,17 @@ MODULE_METADATA = {
     ],
 }
 
-LLM_SOURCES = ("relay", "cursor")
+LLM_SOURCES = ("opencode", "cursor")
+
+LEGACY_RELAY_MODELS = {
+    "mini",
+    "nova",
+    "5.3-codex",
+    "luna",
+    "terra",
+    "pro",
+    "gemini-3.5-flash",
+}
 
 LLM_ROLES = (
     "main_planner",
@@ -109,7 +119,7 @@ def effort_selector_value(effort) -> str:
 
 def _default_role_config(role: str) -> dict:
     defaults = {
-        "source": "relay",
+        "source": "opencode",
         "model": getattr(CFG, "DEFAULT_MODEL", "mini"),
         "effort": effort_selector_value(getattr(CFG, "DEFAULT_EFFORT", "m")),
         "max_tokens": int(getattr(CFG, "DEFAULT_MAX_TOKENS", 16384)),
@@ -167,10 +177,14 @@ def _normalize_role_entry(entry: dict | None, role: str) -> dict:
     entry = entry if isinstance(entry, dict) else {}
 
     source = str(entry.get("source") or base["source"]).strip().lower()
+    if source == "relay":
+        source = "opencode"
     if source not in LLM_SOURCES:
         source = base["source"]
 
     model = str(entry.get("model") or base["model"]).strip() or base["model"]
+    if source == "opencode" and model in LEGACY_RELAY_MODELS:
+        model = getattr(CFG, "DEFAULT_MODEL", "deepseek-v4-flash")
     effort = effort_selector_value(entry.get("effort") or base["effort"])
     cursor_params = normalize_cursor_params(entry.get("cursor_params"))
 
@@ -337,7 +351,7 @@ if __name__ == "__main__":
     cfg = default_model_config()
     assert set(cfg["roles"]) == set(LLM_ROLES)
     assert set(cfg["parse_fallbacks"]) == set(PARSE_FALLBACK_KINDS)
-    assert get_role_config("main_planner")["source"] == "relay"
+    assert get_role_config("main_planner")["source"] == "opencode"
     with role_override_scope({"subagent_explore": {"model": "override-model", "source": "cursor"}}):
         overridden = get_role_config("subagent_explore")
         assert overridden["model"] == "override-model"
@@ -345,5 +359,5 @@ if __name__ == "__main__":
     assert get_role_config("subagent_explore")["model"] != "override-model"
     assert get_parse_fallback("execution")["model"]
     saved = save_model_config(cfg)
-    assert saved["roles"]["debug"]["model"] == "mini"
+    assert saved["roles"]["debug"]["model"] == "deepseek-v4-flash"
     print("MODEL_CONFIG SELF TEST PASSED")

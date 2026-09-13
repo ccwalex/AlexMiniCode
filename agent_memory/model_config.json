@@ -1,76 +1,76 @@
 {
   "roles": {
     "main_planner": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 16384
     },
     "subagent_explore": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "l",
       "max_tokens": 8192
     },
     "subagent_review": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 8192
     },
     "subagent_implement": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 16384
     },
     "meta_writer": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 4096
     },
     "verifier": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "l",
       "max_tokens": 4096
     },
     "local_repair": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 8192
     },
     "debug": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 16384
     },
     "context_rewriter": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "l",
       "max_tokens": 4096
     },
     "discussion": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "l",
       "max_tokens": 16384
     }
   },
   "parse_fallbacks": {
     "execution": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "m",
       "max_tokens": 16384
     },
     "verifier": {
-      "source": "relay",
-      "model": "mini",
+      "source": "opencode",
+      "model": "deepseek-v4-flash",
       "effort": "l",
       "max_tokens": 4096
     }

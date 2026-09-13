@@ -21,6 +21,7 @@ from build_react_tsx_meta_prompt import build_react_tsx_meta_prompt
 from build_typescript_meta_prompt import build_typescript_meta_prompt
 from call_llm import call_llm_role
 from cfg import CFG
+from opencode_session import universal_session
 from meta_writer import sanitize_module_metadata
 
 
@@ -51,6 +52,7 @@ def meta_caller(path: str, content: str) -> dict:
         role="meta_writer",
         messages=messages,
         timeout=cfg.get_timeout("planner_call"),
+        session_id=universal_session("meta_writer"),
     )
     metadata = sanitize_module_metadata(raw, path=path)
     if not metadata.get("name"):

@@ -45,69 +45,20 @@ def verify_step(step, modules_override=None, read_cache=None):
         thinking="medium",
         max_tokens=8192,
     ):
-        """
-        Verifier model call with automatic Gemini fallback on timeout.
-        """
-    
-        base_payload = {
-            "max_tokens": max_tokens,
-            "thinking": thinking,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
-        }
-    
+        from call_llm import call_llm_role
+        from opencode_session import universal_session
+
         try:
-            r = requests.post(
-                AWS_RELAY_URL,
-                json=base_payload,
-                timeout=VERIFIER_TIMEOUT,
+            return call_llm_role(
+                role="verifier",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens,
+                thinking=thinking,
+                session_id=universal_session("verifier", "write"),
             )
-            return r.json()
-    
-        except requests.exceptions.Timeout:
-            print(
-                f"⚠️ verifier timed out on primary route after {VERIFIER_TIMEOUT}s; "
-                f"retrying with {VERIFIER_FALLBACK_MODEL}"
-            )
-    
-            fallback_payload = dict(base_payload)
-            fallback_payload["provider"] = VERIFIER_FALLBACK_PROVIDER
-            fallback_payload["model"] = VERIFIER_FALLBACK_MODEL
-    
-            if VERIFIER_FALLBACK_PROVIDER == "gemini":
-                fallback_payload["gemini"] = {
-                    "enterprise": True,
-                    "location": "global",
-                    "api_version": "v1",
-                    "response_mime_type": "application/json",
-                }
-                fallback_payload['thinking'] = 'low'
-    
-            try:
-                r = requests.post(
-                    AWS_RELAY_URL,
-                    json=fallback_payload,
-                    timeout=VERIFIER_TIMEOUT,
-                )
-                return r.json()
-    
-            except Exception as fallback_e:
-                return {
-                    "approved": False,
-                    "reason": (
-                        "verifier fallback failure after primary timeout: "
-                        f"{str(fallback_e)}"
-                    ),
-                }
-    
         except Exception as e:
             return {
                 "approved": False,

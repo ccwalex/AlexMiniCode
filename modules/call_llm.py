@@ -3,7 +3,7 @@ from cfg import CFG
 MODULE_METADATA = {
     "name": "call_llm",
     "type": "function",
-    "description": "Call LLM via relay server or Cursor SDK using global per-role configuration, with model-specific fallback chains on transient Cursor failures.",
+    "description": "Call LLM via OpenCode Go or Cursor SDK using global per-role configuration, with model-specific fallback chains on transient Cursor failures.",
     "functions": [
         {
             "name": "call_llm",
@@ -17,7 +17,7 @@ MODULE_METADATA = {
                 "timeout": "int | None"
             },
             "outputs": "dict",
-            "description": "Relay-only LLM call kept for backward compatibility."
+            "description": "OpenCode-only LLM call kept for backward compatibility."
         },
         {
             "name": "call_llm_role",
@@ -31,6 +31,7 @@ MODULE_METADATA = {
                 "provider": "str | None",
                 "timeout": "int | None",
                 "cursor_params": "list | None Cursor model selection parameters",
+                "session_id": "str | None OpenCode session id override",
             },
             "outputs": "dict",
             "description": "Dispatch LLM call using saved role configuration."
@@ -48,64 +49,15 @@ def call_llm(
     gemini_config: dict | None,
     timeout: int | None
 ) -> dict:
-    return call_llm_relay(
+    from call_llm_opencode import call_llm_opencode
+
+    return call_llm_opencode(
         messages=messages,
-        max_tokens=max_tokens,
-        thinking=thinking,
-        provider=provider,
         model=model,
-        gemini_config=gemini_config,
+        thinking=thinking,
+        max_tokens=max_tokens,
         timeout=timeout,
     )
-
-
-def call_llm_relay(
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    thinking: str,
-    provider: str | None,
-    model: str | None,
-    gemini_config: dict | None,
-    timeout: int | None,
-) -> dict:
-    try:
-        import requests
-    except ImportError as exc:
-        raise RuntimeError(
-            "Relay LLM calls require the 'requests' package. "
-            "Install requests or select the Cursor source."
-        ) from exc
-
-    payload = {
-        "max_tokens": max_tokens,
-        "thinking": thinking,
-        "messages": messages,
-    }
-    if provider is not None:
-        payload["provider"] = provider
-    if model is not None:
-        payload["model"] = model
-    if provider == "gemini":
-        payload["gemini"] = {
-            "enterprise": True,
-            "location": "global",
-            "api_version": "v1",
-            "response_mime_type": "application/json",
-        }
-        if gemini_config:
-            payload["gemini"].update(gemini_config)
-
-    relay_url = CFG.RELAY_URL
-    if timeout is None:
-        timeout = CFG.get_timeout("planner_call", 240)
-
-    response = requests.post(
-        relay_url,
-        json=payload,
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    return response.json()
 
 
 def _role_timeout(role: str, timeout=None):
@@ -135,11 +87,13 @@ def _call_llm_attempt(
     timeout=None,
     gemini_config=None,
     cursor_params=None,
+    session_id=None,
 ):
     from call_llm_cursor import call_llm_cursor
-    from model_registry import normalize_model_provider
+    from call_llm_opencode import call_llm_opencode
+    from model_registry import normalize_model_name
 
-    source = str(source or "relay").strip().lower()
+    source = str(source or "opencode").strip().lower()
 
     if source == "cursor":
         return call_llm_cursor(
@@ -151,19 +105,14 @@ def _call_llm_attempt(
             cursor_params=cursor_params,
         )
 
-    resolved_provider = provider
-    resolved_model = model
-    if resolved_provider is None:
-        resolved_provider, resolved_model = normalize_model_provider(model)
-
-    return call_llm_relay(
+    resolved_model = normalize_model_name(model)
+    return call_llm_opencode(
         messages=messages,
-        max_tokens=max_tokens,
-        thinking=thinking,
-        provider=resolved_provider,
         model=resolved_model,
-        gemini_config=gemini_config,
+        thinking=thinking,
+        max_tokens=max_tokens,
         timeout=timeout,
+        session_id=session_id,
     )
 
 
@@ -178,6 +127,7 @@ def call_llm_role(
     timeout=None,
     gemini_config=None,
     cursor_params=None,
+    session_id=None,
 ):
     from model_config import get_role_config, normalize_effort
     from llm_fallback import build_fallback_chain, format_fallback_attempt, is_retryable_llm_error
@@ -185,7 +135,7 @@ def call_llm_role(
 
     cfg = get_role_config(role)
 
-    source = str(source or cfg.get("source") or "relay").strip().lower()
+    source = str(source or cfg.get("source") or "opencode").strip().lower()
     model = model if model is not None else cfg.get("model")
     thinking = thinking if thinking is not None else normalize_effort(cfg.get("effort"))
     max_tokens = int(max_tokens if max_tokens is not None else cfg.get("max_tokens") or 8192)
@@ -215,6 +165,7 @@ def call_llm_role(
                 timeout=timeout,
                 gemini_config=gemini_config,
                 cursor_params=attempt_params,
+                session_id=session_id,
             )
         except Exception as exc:
             errors.append(f"{label}: {exc}")

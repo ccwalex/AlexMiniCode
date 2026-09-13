@@ -53,7 +53,7 @@ FALLBACK_CHAINS: dict[str, list[dict[str, object]]] = {
         # Replace the grok ids/params below with values from Cursor.models.list().
         {"source": "cursor", "model": "grok-4.5", "cursor_params": []},
         {"source": "cursor", "model": "grok-4.6", "cursor_params": []},
-        {"source": "relay", "model": "5.3-codex", "cursor_params": []},
+        {"source": "opencode", "model": "kimi-k2.7-code", "cursor_params": []},
     ],
 }
 
@@ -117,12 +117,14 @@ def build_fallback_chain(source: str, model, cursor_params=None) -> list[dict[st
     Non-cursor sources, unknown models, and models without a configured chain
     return a single direct attempt.
     """
-    source = str(source or "relay").strip().lower()
+    source = str(source or "opencode").strip().lower()
+    if source == "relay":
+        source = "opencode"
     model_id = canonical_model_id(model)
     params = normalize_cursor_params(cursor_params)
 
     if source != "cursor" or not model_id:
-        return [{"source": source or "relay", "model": model_id or str(model or "").strip(), "cursor_params": params}]
+        return [{"source": source or "opencode", "model": model_id or str(model or "").strip(), "cursor_params": params}]
 
     chain = FALLBACK_CHAINS.get(model_id)
     if not chain:
@@ -198,7 +200,7 @@ if __name__ == "__main__":
     chain = build_fallback_chain("cursor", "composer-2.5")
     assert len(chain) >= 4
     assert chain[0]["model"] == "composer-2.5"
-    assert chain[-1] == {"source": "relay", "model": "5.3-codex", "cursor_params": []}
+    assert chain[-1] == {"source": "opencode", "model": "kimi-k2.7-code", "cursor_params": []}
 
     custom = build_fallback_chain(
         "cursor",
@@ -207,8 +209,8 @@ if __name__ == "__main__":
     )
     assert custom[0]["cursor_params"] == [{"id": "fast", "value": "true"}]
 
-    relay_only = build_fallback_chain("relay", "mini")
-    assert relay_only == [{"source": "relay", "model": "mini", "cursor_params": []}]
+    opencode_only = build_fallback_chain("opencode", "deepseek-v4-flash")
+    assert opencode_only == [{"source": "opencode", "model": "deepseek-v4-flash", "cursor_params": []}]
 
     assert is_retryable_llm_error("model unavailable due to high demand") is True
     assert is_retryable_llm_error("invalid api key") is False

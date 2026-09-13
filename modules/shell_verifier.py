@@ -2,6 +2,7 @@ import json
 import re
 from build_shell_verifier_prompt import build_shell_verifier_prompt
 from call_llm import call_llm_role
+from opencode_session import session_for
 from structured_llm_retry import call_llm_role_with_parse_retry, is_valid_verifier_response
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
 
@@ -190,6 +191,7 @@ You are a shell command verifier.
             max_tokens=500,
             thinking="low",
             timeout=60,
+            session_id=session_for("verifier", "shell"),
         )
         
         parsed = parse_llm_shell_decision(response)

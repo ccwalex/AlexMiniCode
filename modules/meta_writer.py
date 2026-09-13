@@ -243,8 +243,8 @@ if __name__ == "__main__":
         "type": "function",
         "description": "demo",
         "functions": [{"name": "example", "inputs": {}, "outputs": "None"}],
-        "llm_source": "relay",
-        "llm_model": "mini",
+        "llm_source": "opencode",
+        "llm_model": "deepseek-v4-flash",
         "fallback_used": False,
         "cursor_params": [],
     }

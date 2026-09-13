@@ -26,7 +26,8 @@ MODULE_METADATA = {
         },
     ],
     "fields": {
-        "RELAY_URL": "str",
+        "OPENCODE_GO_BASE_URL": "str",
+        "AGENT_VERSION": "str",
         "PROJECT_ROOT": "str",
         "RUNS_DIR": "str",
         "MODEL_OPTIONS": "list",
@@ -61,7 +62,8 @@ MODULE_METADATA = {
 
 
 class CFG:
-    RELAY_URL = "http://100.116.15.21:8080/awsgm-relay"
+    OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+    AGENT_VERSION = "2.0"
     PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")    )
     MODEL_OPTIONS = [
         None,
@@ -75,7 +77,7 @@ class CFG:
         "h",
     ]
 
-    DEFAULT_MODEL = "mini"
+    DEFAULT_MODEL = "deepseek-v4-flash"
     DEFAULT_EFFORT = "m"
     DEFAULT_MAX_TOKENS = 16384
 
@@ -102,12 +104,12 @@ class CFG:
     RUNS_DIR = os.path.join(PROJECT_ROOT, "runs")
     VERIFIER_FALLBACK_PROVIDER = "gemini"
     VERIFIER_FALLBACK_MODEL = "gemini-3.5-flash"
-    METAWRITER_MODEL = "mini"
+    METAWRITER_MODEL = "deepseek-v4-flash"
     METAWRITER_PROVIDER = None
     METAWRITER_EFFORT = "m"
     METAWRITER_TOKENS = 4096
     BACKGROUND_CONTEXT_ENABLED = True
-    BACKGROUND_CONTEXT_MODEL = "mini"
+    BACKGROUND_CONTEXT_MODEL = "deepseek-v4-flash"
     BACKGROUND_CONTEXT_EFFORT = "l"
     BACKGROUND_CONTEXT_MAX_TOKENS = 4096
     READ_COMMANDS = ["cat", "head", "tail", "wc"]
@@ -128,7 +130,8 @@ class CFG:
     @classmethod
     def as_dict(cls) -> dict:
         return {
-            "RELAY_URL": cls.RELAY_URL,
+            "OPENCODE_GO_BASE_URL": cls.OPENCODE_GO_BASE_URL,
+            "AGENT_VERSION": cls.AGENT_VERSION,
             "PROJECT_ROOT": cls.PROJECT_ROOT,
             "RUNS_DIR": cls.RUNS_DIR,
             "MODEL_OPTIONS": list(cls.MODEL_OPTIONS),

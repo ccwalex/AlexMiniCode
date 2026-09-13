@@ -1,5 +1,5 @@
 """
-Fetch available model lists for relay and Cursor sources.
+Fetch available model lists for OpenCode Go and Cursor sources.
 Cursor models are fetched live and are not persisted.
 """
 
@@ -9,15 +9,15 @@ import json
 import os
 
 from cursor_model_selection import model_selection_label, normalize_cursor_params
-from model_registry import GUI_MODELS
+from opencode_registry import DEFAULT_OPENCODE_MODEL, fetch_opencode_models
 
 MODULE_METADATA = {
     "name": "list_llm_models",
     "type": "function",
-    "description": "List available models for relay server or Cursor SDK.",
+    "description": "List available models for OpenCode Go or Cursor SDK.",
     "functions": [
         {
-            "name": "list_relay_models",
+            "name": "list_opencode_models",
             "inputs": {},
             "outputs": "dict with success, models, error",
         },
@@ -28,7 +28,7 @@ MODULE_METADATA = {
         },
         {
             "name": "list_models_for_source",
-            "inputs": {"source": "str relay or cursor"},
+            "inputs": {"source": "str opencode or cursor"},
             "outputs": "dict with success, models, error",
         },
     ],
@@ -193,12 +193,58 @@ def _serialize_cursor_model(item) -> dict:
     }
 
 
-def list_relay_models() -> dict:
-    models = [_model_item(name) for name in GUI_MODELS]
+def _serialize_opencode_model(entry: dict) -> dict:
+    model_id = str(entry.get("id") or "").strip()
+    label = str(entry.get("label") or model_id).strip() or model_id
+    transport = str(entry.get("transport") or "chat").strip()
+    item = _model_item(
+        model_id,
+        f"{label} ({transport})",
+        kind="model",
+        base_model=model_id,
+        parameters=[],
+        variants=[],
+    )
+    item["transport"] = transport
+    item["endpoint_path"] = entry.get("endpoint_path")
+    item["transport_source"] = entry.get("transport_source")
+    return item
+
+
+def list_opencode_models() -> dict:
+    try:
+        catalog = fetch_opencode_models()
+    except Exception as exc:
+        return {
+            "success": False,
+            "source": "opencode",
+            "models": [],
+            "catalog": [],
+            "error": str(exc),
+        }
+
+    models = []
+    catalog = []
+    for entry in catalog:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        serialized = _serialize_opencode_model(entry)
+        models.append(serialized)
+        catalog.append(
+            {
+                **entry,
+                "label": serialized["label"],
+            }
+        )
+
+    models.sort(key=lambda x: x["label"].lower())
+    catalog.sort(key=lambda x: str(x.get("label") or x.get("id")).lower())
+
     return {
         "success": True,
-        "source": "relay",
+        "source": "opencode",
         "models": models,
+        "catalog": catalog,
         "error": None,
     }
 
@@ -275,11 +321,13 @@ def list_cursor_models() -> dict:
 
 
 def list_models_for_source(source: str) -> dict:
-    source = str(source or "relay").strip().lower()
+    source = str(source or "opencode").strip().lower()
+    if source == "relay":
+        source = "opencode"
     if source == "cursor":
         return list_cursor_models()
-    if source == "relay":
-        return list_relay_models()
+    if source == "opencode":
+        return list_opencode_models()
     return {
         "success": False,
         "source": source,
@@ -290,9 +338,10 @@ def list_models_for_source(source: str) -> dict:
 
 
 if __name__ == "__main__":
-    relay = list_relay_models()
-    assert relay["success"] is True
-    assert any(m["id"] == "mini" for m in relay["models"])
+    opencode = list_opencode_models()
+    assert "success" in opencode
+    if opencode["success"]:
+        assert any(m["id"] == DEFAULT_OPENCODE_MODEL for m in opencode["models"])
 
     sample = _serialize_cursor_model(
         {

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from call_llm import call_llm_role
 from model_config import get_role_config
+from opencode_session import session_for
 from read_file import read_file
 from render_file_context import render_file_context
 
@@ -187,7 +188,7 @@ def _summary_result(*, success, role, mode, status, summary, artifacts=None, run
     return result
 
 
-def _run_readonly(task, role, files, timeout_seconds):
+def _run_readonly(task, role, files, timeout_seconds, session_id=None):
     if role == "implement":
         return _summary_result(
             success=False,
@@ -226,6 +227,7 @@ def _run_readonly(task, role, files, timeout_seconds):
                 source=cfg.get("source"),
                 cursor_params=cfg.get("cursor_params"),
                 timeout=timeout_seconds,
+                session_id=session_id or session_for("subagent", role, uuid.uuid4().hex[:8]),
             ),
             timeout_seconds,
         )
@@ -422,7 +424,7 @@ def _run_process(task, role, files, timeout_seconds):
 SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 1200
 
 
-def run_subagent(task, role="explore", mode="process", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS):
+def run_subagent(task, role="explore", mode="process", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS, session_id=None):
     task = str(task or "").strip()
     role = str(role or "explore").strip().lower()
     mode = str(mode or "process").strip().lower()
@@ -468,7 +470,7 @@ def run_subagent(task, role="explore", mode="process", files=None, timeout_secon
         timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
     files = files if isinstance(files, list) else []
     if mode == "readonly":
-        return _run_readonly(task, role, files, timeout_seconds)
+        return _run_readonly(task, role, files, timeout_seconds, session_id=session_id)
     return _run_process(task, role, files, timeout_seconds)
 
 

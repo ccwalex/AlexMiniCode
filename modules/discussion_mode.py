@@ -491,6 +491,7 @@ def discussion_send_message(
     thinking = _normalize_effort(effort)
 
     from call_llm import call_llm_role
+    from opencode_session import session_for
 
     try:
         raw = call_llm_role(
@@ -500,6 +501,7 @@ def discussion_send_message(
             thinking=thinking,
             model=model,
             timeout=CFG.get_timeout("discussion_call", 240),
+            session_id=session_for("discussion"),
         )
     except Exception as e:
         session["messages"].pop()

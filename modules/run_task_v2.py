@@ -10,7 +10,8 @@ MODULE_METADATA = {
                 "max_tokens": "int or None planner max token budget",
                 "model": "str or None model selector",
                 "effort": "str or None effort selector l/m/h or low/medium/high",
-                "llm_source": "str or None relay or cursor",
+                "llm_source": "str or None opencode or cursor",
+                "job_id": "str or None job id for OpenCode session scoping",
                 "cursor_params": "list or None Cursor model parameters",
                 "shell_instruction_prompt": "str shell permission/safety instructions",
                 "max_iterations": "int or None",
@@ -52,6 +53,7 @@ from run_state import RunState
 from append_run import append_run
 from preview import preview
 from model_config import get_role_config, role_override_scope
+from opencode_session import opencode_job_scope, opencode_session_scope, session_for
 
 
 def normalize_effort(effort):
@@ -173,22 +175,24 @@ def _call_planner_llm(system_prompt, user_prompt, max_tokens, model, effort, llm
         },
     ]
 
-    return call_llm_role_with_parse_retry(
-        role="main_planner",
-        messages=messages,
-        is_valid=lambda raw: bool(
-            parse_api_plan(raw).get("success")
-            and parse_api_plan(raw).get("calls")
-        ),
-        parse_fallback_kind="execution",
-        llm_call=call_llm_role,
-        max_tokens=max_tokens,
-        thinking=effort,
-        model=model,
-        source=llm_source,
-        cursor_params=cursor_params,
-        timeout=None,
-    )
+    with opencode_session_scope(session_for("planner")):
+        return call_llm_role_with_parse_retry(
+            role="main_planner",
+            messages=messages,
+            is_valid=lambda raw: bool(
+                parse_api_plan(raw).get("success")
+                and parse_api_plan(raw).get("calls")
+            ),
+            parse_fallback_kind="execution",
+            llm_call=call_llm_role,
+            max_tokens=max_tokens,
+            thinking=effort,
+            model=model,
+            source=llm_source,
+            cursor_params=cursor_params,
+            timeout=None,
+            session_id=session_for("planner"),
+        )
     
 
 def run_task_v2(
@@ -204,21 +208,24 @@ def run_task_v2(
     max_retries=None,
     role_overrides=None,
     skip_task_rewrite=False,
+    job_id=None,
 ):
     with role_override_scope(role_overrides):
-        return _run_task_v2(
-            task,
-            max_tokens=max_tokens,
-            model=model,
-            effort=effort,
-            llm_source=llm_source,
-            cursor_params=cursor_params,
-            shell_instruction_prompt=shell_instruction_prompt,
-            max_iterations=max_iterations,
-            max_feedback_loops=max_feedback_loops,
-            max_retries=max_retries,
-            skip_task_rewrite=skip_task_rewrite,
-        )
+        with opencode_job_scope(job_id):
+            return _run_task_v2(
+                task,
+                max_tokens=max_tokens,
+                model=model,
+                effort=effort,
+                llm_source=llm_source,
+                cursor_params=cursor_params,
+                shell_instruction_prompt=shell_instruction_prompt,
+                max_iterations=max_iterations,
+                max_feedback_loops=max_feedback_loops,
+                max_retries=max_retries,
+                skip_task_rewrite=skip_task_rewrite,
+                job_id=job_id,
+            )
 
 
 def _run_task_v2(
@@ -233,6 +240,7 @@ def _run_task_v2(
     max_feedback_loops=None,
     max_retries=None,
     skip_task_rewrite=False,
+    job_id=None,
 ):
     planner_cfg = get_role_config("main_planner")
 

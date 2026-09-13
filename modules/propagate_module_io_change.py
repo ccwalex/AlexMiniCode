@@ -43,6 +43,7 @@ from infer_code_type import infer_code_type
 from is_tracked import is_tracked
 from read_file import read_file
 from refresh_after_file_change import refresh_after_file_change
+from opencode_session import universal_session
 from subagent_runner import run_subagent
 
 
@@ -70,7 +71,14 @@ def _llm_output_changed(path, pre_content, post_content):
         f"<before>\n{(pre_content or '')[:12000]}\n</before>\n"
         f"<after>\n{(post_content or '')[:12000]}\n</after>"
     )
-    result = run_subagent(task, role="review", mode="readonly", files=[path], timeout_seconds=1200)
+    result = run_subagent(
+        task,
+        role="review",
+        mode="readonly",
+        files=[path],
+        timeout_seconds=1200,
+        session_id=universal_session("dependency_io_review"),
+    )
     summary = str((result or {}).get("summary") or "").strip()
     first = summary.splitlines()[0].strip().upper() if summary else ""
     changed = first.startswith("YES")

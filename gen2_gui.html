@@ -96,7 +96,7 @@ button:disabled{opacity:.55;cursor:wait}
 <textarea id="prompt" rows="9"></textarea>
 <div class="small">Main planner (per job). Defaults preset from Model Config → main planner.</div>
 <div class="row4">
-<div><label>Source</label><select id="jobSource" onchange="onJobSourceChange()"><option value="relay">relay server</option><option value="cursor">cursor CLI</option></select></div>
+<div><label>Source</label><select id="jobSource" onchange="onJobSourceChange()"><option value="opencode">OpenCode Go</option><option value="cursor">cursor CLI</option></select></div>
 <div><label>Model</label><select id="jobModel"></select></div>
 <div><label>Effort</label><select id="jobEffort"><option value="l" selected>low</option><option value="m">medium</option><option value="h">high</option></select></div>
 <div><label>Max tokens</label><input id="jobMaxTokens" type="number" value="16384"></div>
@@ -260,7 +260,7 @@ function effortLabel(v){
 function formatRoleSummary(entry){
   if(!entry) return 'not configured';
   const modelLabel=entry.model_label||entry.model||'?';
-  return `${entry.source||'relay'} / ${modelLabel} / ${effortLabel(entry.effort||'m')} / ${entry.max_tokens||'?'}`;
+  return `${entry.source||'opencode'} / ${modelLabel} / ${effortLabel(entry.effort||'m')} / ${entry.max_tokens||'?'}`;
 }
 
 function paramsEqual(a,b){
@@ -335,7 +335,7 @@ async function renderJobSubagentConfig(){
     return `<div class="small" style="margin-top:8px">${esc(r.label||r.id)}</div>
       <div class="row4" data-job-role="${esc(r.id)}">
         <div><label>Source</label><select class="job-role-source" onchange="onJobRoleSourceChange('${esc(r.id)}')">
-          <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+          <option value="opencode" ${entry.source==='opencode'?'selected':''}>OpenCode Go</option>
           <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
         </select></div>
         <div><label>Model</label><select class="job-role-model" id="jobRoleModel_${id}"></select></div>
@@ -349,13 +349,13 @@ async function renderJobSubagentConfig(){
   }).join('');
   for(const r of roles){
     const entry=cfg[r.id]||{};
-    await populateNamedModelSelect('jobRoleModel_'+jobRoleDomId(r.id), entry.source||'relay', entry.model||'', entry.cursor_params||[]);
+    await populateNamedModelSelect('jobRoleModel_'+jobRoleDomId(r.id), entry.source||'opencode', entry.model||'', entry.cursor_params||[]);
   }
 }
 
 async function applyJobPlannerDefaults(entry){
   entry=entry||modelConfigState?.config?.roles?.main_planner||modelConfigState?.summary?.main_planner||{};
-  jobSource.value=entry.source||'relay';
+  jobSource.value=entry.source||'opencode';
   jobEffort.value=entry.effort||'l';
   jobMaxTokens.value=entry.max_tokens||16384;
   await renderJobSubagentConfig();
@@ -403,7 +403,7 @@ async function loadModelConfigSummary(){
 }
 
 async function fetchModelsForSource(source, forceRefresh=false){
-  const key=String(source||'relay');
+  const key=String(source||'opencode');
   if(!forceRefresh && modelOptionsCache[key]) return modelOptionsCache[key];
   const d=await api('/api/model_config/models?source='+encodeURIComponent(key));
   if(!d.success) throw new Error(d.error||('failed to load models for '+key));
@@ -506,7 +506,7 @@ function roleConfigRowHtml(r, entry){
   return `<tr data-role="${esc(r.id)}">
       <td><b>${esc(r.label||r.id)}</b></td>
       <td><select class="cfg-source" onchange="onModelConfigSourceChange('${esc(r.id)}')">
-        <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+        <option value="opencode" ${entry.source==='opencode'?'selected':''}>OpenCode Go</option>
         <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
       </select></td>
       <td><select class="cfg-model" id="cfgModel_${esc(r.id)}"></select></td>
@@ -540,7 +540,7 @@ async function renderModelConfigRows(){
   }
   modelConfigRows.innerHTML=parts.join('');
   for(const r of roles){
-    await populateModelSelect(r.id, cfg[r.id]?.source||'relay', cfg[r.id]?.model||'', cfg[r.id]?.cursor_params||[]);
+    await populateModelSelect(r.id, cfg[r.id]?.source||'opencode', cfg[r.id]?.model||'', cfg[r.id]?.cursor_params||[]);
   }
   await renderParseFallbackRows();
 }
@@ -556,7 +556,7 @@ async function renderParseFallbackRows(){
     return `<tr data-kind="${esc(k.id)}">
       <td><b>${esc(k.label||k.id)}</b></td>
       <td><select class="cfg-source" onchange="onParseFallbackSourceChange('${esc(k.id)}')">
-        <option value="relay" ${entry.source==='relay'?'selected':''}>relay server</option>
+        <option value="opencode" ${entry.source==='opencode'?'selected':''}>OpenCode Go</option>
         <option value="cursor" ${entry.source==='cursor'?'selected':''}>cursor CLI</option>
       </select></td>
       <td><select class="cfg-model" id="cfgModel_parse_${esc(k.id)}"></select></td>
@@ -569,7 +569,7 @@ async function renderParseFallbackRows(){
     </tr>`;
   }).join('');
   for(const k of kinds){
-    await populateModelSelect('parse_'+k.id, cfg[k.id]?.source||'relay', cfg[k.id]?.model||'', cfg[k.id]?.cursor_params||[]);
+    await populateModelSelect('parse_'+k.id, cfg[k.id]?.source||'opencode', cfg[k.id]?.model||'', cfg[k.id]?.cursor_params||[]);
   }
 }
 

@@ -35,6 +35,7 @@ def run_task(
     max_feedback_loops=None,
     max_retries=None,
     use_v2=True,
+    job_id=None,
 ):
     """
     Stable public facade.
@@ -55,6 +56,7 @@ def run_task(
             max_iterations=max_iterations,
             max_feedback_loops=max_feedback_loops,
             max_retries=max_retries,
+            job_id=job_id,
         )
 
     if run_task_v1 is None:

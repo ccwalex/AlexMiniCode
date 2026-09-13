@@ -2,6 +2,7 @@ import ast
 import json
 
 from call_llm import call_llm_role
+from opencode_session import universal_session
 from cfg import CFG
 from structured_llm_retry import call_llm_role_with_parse_retry, is_valid_verifier_response
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
@@ -184,6 +185,7 @@ Return only JSON with approved and reason.
         max_tokens=1024,
         thinking="low",
         timeout=cfg.get_timeout("verifier_call"),
+        session_id=universal_session("verifier", "edit"),
     )
 
     parsed = _extract_json_obj(resp)

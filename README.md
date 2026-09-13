@@ -2,7 +2,7 @@
 
 Gen2 is a modular coding agent that plans and executes software tasks through a compact JSON API. It reads and edits files, runs shell commands, delegates work to isolated subagents, and verifies changes before finishing.
 
-The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, and a relay-based LLM backend.
+The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, and an OpenCode Go LLM backend.
 
 ## Features
 
@@ -12,7 +12,7 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 - **Subagent delegation** — Delegate bounded tasks to explore, review, or implement roles in isolated workers. Only summaries and changed artifact paths return to the main planner. Several `/subagent` calls may appear in one turn; the backend runs them in parallel only when every call is readonly, otherwise sequentially.
 - **Web GUI and job queue** — Submit tasks through a browser UI or JSON API. Jobs run one at a time through a sequential queue with logs and status polling.
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
-- **Dual LLM backends** — Relay server (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
+- **Dual LLM backends** — OpenCode Go subscription (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
 - **Agent memory** — Persistent project context, plans, run history, and reasoning notes under `agent_memory/`.
 
 ## Project layout
@@ -42,7 +42,7 @@ When you clone this repo, place its contents in `your-project/agent/`. Copy or i
 ## Requirements
 
 - Python 3.10+
-- [`requests`](https://pypi.org/project/requests/) — required for relay LLM calls and the HTTP subagent client
+- [`requests`](https://pypi.org/project/requests/) — required for OpenCode LLM calls and the HTTP subagent client
 - [`cursor-sdk`](https://pypi.org/project/cursor-sdk/) — optional; required only when using the Cursor LLM backend
 
 ## Installation
@@ -58,13 +58,13 @@ pip install requests
 pip install cursor-sdk
 ```
 
-Configure the relay URL in `modules/cfg.py` if you are not using Cursor:
+Set your OpenCode API key for the default backend:
 
-```python
-RELAY_URL = "http://your-relay-host:8080/awsgm-relay"
+```bash
+export OPENCODE_API_KEY="your-opencode-go-api-key"
 ```
 
-Per-role model settings live in `agent_memory/model_config.json`.
+OpenCode Go uses `https://opencode.ai/zen/go/v1`. Per-role model settings live in `agent_memory/model_config.json`.
 
 ## Quick start
 
@@ -77,7 +77,7 @@ from agent import run_task
 
 result = run_task(
     task="Add a docstring to agent/modules/cfg.py",
-    model="mini",
+    model="deepseek-v4-flash",
     effort="l",
     max_tokens=4096,
 )
@@ -166,7 +166,7 @@ Each planner turn produces a JSON array of API calls. The executor runs them seq
 
 | File | Purpose |
 |------|---------|
-| `modules/cfg.py` | Global defaults: relay URL, timeouts, iteration limits, token budgets |
+| `modules/cfg.py` | Global defaults: OpenCode base URL, timeouts, iteration limits, token budgets |
 | `agent_memory/model_config.json` | Per-role LLM source, model, effort, and token settings |
 | `agent_memory/core/project.md` | Durable project description and constraints |
 | `agent_memory/planning/current_plan.md` | Active execution plan |
@@ -176,7 +176,7 @@ Default planner settings:
 
 | Setting | Default |
 |---------|---------|
-| Model | `mini` |
+| Model | `deepseek-v4-flash` |
 | Effort | `l` (low) |
 | Max tokens | `16384` |
 | Max iterations | `20` |

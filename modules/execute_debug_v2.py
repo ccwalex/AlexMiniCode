@@ -7,6 +7,7 @@ from build_feedback_context import (
 )
 from render_file_context import render_file_context
 from call_llm import call_llm_role
+from opencode_session import session_for
 from parse_api_plan import parse_api_plan
 from structured_llm_retry import call_llm_role_with_parse_retry
 from execute_api_plan import execute_api_plan
@@ -287,6 +288,7 @@ def execute_debug_v2(
             thinking=final_effort,
             model=model,
             timeout=None,
+            session_id=session_for("debug"),
         )
 
         print("\n[Debug Loop] Planner output")
