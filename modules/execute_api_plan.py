@@ -22,11 +22,9 @@ MODULE_METADATA = {
 from execute_api_call import execute_api_call
 from propagate_module_io_change import flush_dependency_cascades
 from run_state import RunState
-from subagent_runner import log_subagent_result, run_readonly_subagents_parallel
+from subagent_capabilities import normalize_subagent_role
+from subagent_runner import log_subagent_result, run_review_subagents_parallel
 from job_progress import emit_batch, emit_plan, emit_step, label_for_call, log_step
-
-
-PARALLEL_READONLY_SUBAGENTS = True
 
 VALID_STATUSES = {
     "completed",
@@ -36,11 +34,14 @@ VALID_STATUSES = {
 }
 
 
-def _subagent_mode(call):
+def _subagent_role(call):
     payload = call.get("payload") if isinstance(call, dict) else {}
     if not isinstance(payload, dict):
-        return "process"
-    return str(payload.get("mode") or "process").strip().lower()
+        return "review"
+    try:
+        return normalize_subagent_role(payload.get("role", "review"))
+    except ValueError:
+        return "review"
 
 
 def _consecutive_subagent_calls(calls, start):
@@ -53,6 +54,149 @@ def _consecutive_subagent_calls(calls, start):
         run.append(call)
         index += 1
     return run
+
+
+def _partition_subagent_batch(batch):
+    review_items = []
+    implement_items = []
+    for call in batch:
+        role = _subagent_role(call)
+        if role == "implement":
+            implement_items.append(call)
+        else:
+            review_items.append(call)
+    return review_items, implement_items
+
+
+def _execute_subagent_batch(
+    batch,
+    *,
+    run_state,
+    read_cache,
+    shell_instruction_prompt,
+    scratchpad,
+    mark_task_done,
+    batch_id,
+    index,
+    total_steps,
+):
+    review_items, implement_items = _partition_subagent_batch(batch)
+    ordered_results = [None] * len(batch)
+    call_to_index = {id(call): idx for idx, call in enumerate(batch)}
+
+    if review_items:
+        specs = [item.get("payload") or {} for item in review_items]
+        parallel_group = f"review-{index}"
+        print(f"[Subagent] start parallel review n={len(review_items)}", flush=True)
+        if batch_id:
+            for item in review_items:
+                step_index = index + call_to_index[id(item)]
+                emit_step(
+                    batch_id,
+                    step_index,
+                    item,
+                    "running",
+                    parallel_group=parallel_group,
+                )
+                log_step(
+                    f"[Gen2 Step {step_index + 1}/{total_steps}] "
+                    f"{label_for_call(item)} (started, parallel)"
+                )
+        child_results = run_review_subagents_parallel(specs)
+        for item, child in zip(review_items, child_results):
+            payload = item.get("payload") if isinstance(item, dict) else {}
+            if not isinstance(payload, dict):
+                payload = {}
+            child = child if isinstance(child, dict) else {}
+            wrapped = _wrap_subagent_plan_result(item, child)
+            step_index = index + call_to_index[id(item)]
+            ordered_results[call_to_index[id(item)]] = wrapped
+            if batch_id:
+                child_status = "done" if child.get("success") else "failed"
+                emit_step(
+                    batch_id,
+                    step_index,
+                    item,
+                    child_status,
+                    parallel_group=parallel_group,
+                    error=str(child.get("error") or ""),
+                )
+                log_step(
+                    f"[Gen2 Step {step_index + 1}/{total_steps}] "
+                    f"{label_for_call(item)} ({child_status}, parallel)"
+                )
+            log_subagent_result(
+                child,
+                role=payload.get("role", "review"),
+                task=payload.get("task"),
+            )
+
+    for call in implement_items:
+        step_index = index + call_to_index[id(call)]
+        if batch_id:
+            emit_step(batch_id, step_index, call, "running")
+        log_step(
+            f"[Gen2 Step {step_index + 1}/{total_steps}] "
+            f"{label_for_call(call)} (started)"
+        )
+        try:
+            result = execute_api_call(
+                call=call,
+                run_state=run_state,
+                read_cache=read_cache,
+                shell_instruction_prompt=shell_instruction_prompt,
+                scratchpad=scratchpad,
+                mark_task_done=mark_task_done,
+                batch_id=batch_id,
+                step_index=step_index,
+            )
+        except Exception as exc:
+            result = {
+                "success": False,
+                "url": call.get("url") if isinstance(call, dict) else None,
+                "payload": call.get("payload", {}) if isinstance(call, dict) else {},
+                "output": None,
+                "error": f"execute_api_call raised exception: {str(exc)}",
+                "done": False,
+                "conflict": False,
+                "request_feedback": False,
+            }
+        ordered_results[call_to_index[id(call)]] = result
+        payload = call.get("payload") if isinstance(call, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if result.get("url") == "/subagent":
+            subagent_result = (result.get("output") or {}).get("subagent_result")
+            if isinstance(subagent_result, dict):
+                log_subagent_result(
+                    subagent_result,
+                    role=payload.get("role", "implement"),
+                    task=payload.get("task"),
+                )
+        step_status = "done" if result.get("success") else "failed"
+        if batch_id:
+            emit_step(
+                batch_id,
+                step_index,
+                call,
+                step_status,
+                error=str(result.get("error") or ""),
+            )
+        log_step(
+            f"[Gen2 Step {step_index + 1}/{total_steps}] "
+            f"{label_for_call(call)} ({step_status})"
+        )
+        if not result.get("success"):
+            batch_results = [item for item in ordered_results if item is not None]
+            return batch_results, result
+
+    batch_results = ordered_results
+    last_result = batch_results[-1] if batch_results else {
+        "success": True,
+        "request_feedback": True,
+        "url": "/subagent",
+    }
+    return batch_results, last_result
 
 
 def _wrap_subagent_plan_result(call, subagent_result):
@@ -171,71 +315,29 @@ def execute_api_plan(
             if isinstance(call, dict) and call.get("url") == "/subagent"
             else []
         )
-        parallel_readonly_batch = (
-            PARALLEL_READONLY_SUBAGENTS
-            and len(batch) >= 2
-            and all(_subagent_mode(item) == "readonly" for item in batch)
-        )
-        if not parallel_readonly_batch:
+        subagent_batch = bool(batch)
+        if not subagent_batch:
             if batch_id:
                 emit_step(batch_id, index, call, "running")
             log_step(f"[Gen2 Step {index + 1}/{total_steps}] {step_label} (started)")
         batch_results = None
-        if parallel_readonly_batch:
-            specs = [item.get("payload") or {} for item in batch]
-            parallel_group = f"readonly-{index}"
-            print(f"[Subagent] start parallel readonly n={len(batch)}", flush=True)
-            if batch_id:
-                for offset, item in enumerate(batch):
-                    emit_step(
-                        batch_id,
-                        index + offset,
-                        item,
-                        "running",
-                        parallel_group=parallel_group,
-                    )
-                    log_step(
-                        f"[Gen2 Step {index + offset + 1}/{total_steps}] "
-                        f"{label_for_call(item)} (started, parallel)"
-                    )
-            child_results = run_readonly_subagents_parallel(specs)
-            batch_results = [
-                _wrap_subagent_plan_result(item, child)
-                for item, child in zip(batch, child_results)
-            ]
-            for offset, (item, child) in enumerate(zip(batch, child_results)):
-                payload = item.get("payload") if isinstance(item, dict) else {}
-                if not isinstance(payload, dict):
-                    payload = {}
-                child = child if isinstance(child, dict) else {}
-                if batch_id:
-                    child_status = "done" if child.get("success") else "failed"
-                    emit_step(
-                        batch_id,
-                        index + offset,
-                        item,
-                        child_status,
-                        parallel_group=parallel_group,
-                        error=str(child.get("error") or ""),
-                    )
-                    log_step(
-                        f"[Gen2 Step {index + offset + 1}/{total_steps}] "
-                        f"{label_for_call(item)} ({child_status}, parallel)"
-                    )
-                log_subagent_result(
-                    child,
-                    mode="readonly",
-                    role=payload.get("role", "explore"),
-                    task=payload.get("task"),
-                )
-
-        if batch_results is not None:
-            for item, result in zip(batch, batch_results):
-                results.append(result)
-                _record_plan_result(run_state, item, result)
+        if subagent_batch:
+            batch_results, result = _execute_subagent_batch(
+                batch,
+                run_state=run_state,
+                read_cache=read_cache,
+                shell_instruction_prompt=shell_instruction_prompt,
+                scratchpad=scratchpad,
+                mark_task_done=mark_task_done,
+                batch_id=batch_id,
+                index=index,
+                total_steps=total_steps,
+            )
+            for item, item_result in zip(batch, batch_results):
+                results.append(item_result)
+                _record_plan_result(run_state, item, item_result)
             index += len(batch) - 1
             call = batch[-1]
-            result = batch_results[-1]
         else:
             try:
                 result = execute_api_call(

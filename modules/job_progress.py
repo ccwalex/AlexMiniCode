@@ -122,9 +122,8 @@ def label_for_call(call) -> str:
     if url == "/shell":
         return f"shell {detail}".strip()
     if url == "/subagent":
-        role = str(payload.get("role") or "explore")
-        mode = str(payload.get("mode") or "process")
-        return f"subagent {role} ({mode})".strip()
+        role = str(payload.get("role") or "review")
+        return f"subagent {role}".strip()
     if url == "/scratchpad":
         return f"scratchpad {detail}".strip()
     if url == "/drop_cache":
@@ -321,15 +320,15 @@ if __name__ == "__main__":
 
     calls = [
         {"url": "/write", "payload": {"path": "code/a.py", "content": "x"}},
-        {"url": "/subagent", "payload": {"task": "inspect", "role": "explore", "mode": "readonly"}},
+        {"url": "/subagent", "payload": {"task": "inspect", "role": "review"}},
     ]
     batch_id = "iter-1-main"
     emit_plan(batch_id, calls)
     emit_step(batch_id, 0, calls[0], "running")
     emit_substep(batch_id, 0, calls[0], "verifying", "running", "code/a.py")
     emit_step(batch_id, 0, calls[0], "done")
-    emit_step(batch_id, 1, calls[1], "running", parallel_group="readonly-1")
-    emit_step(batch_id, 1, calls[1], "done", parallel_group="readonly-1")
+    emit_step(batch_id, 1, calls[1], "running", parallel_group="review-1")
+    emit_step(batch_id, 1, calls[1], "done", parallel_group="review-1")
 
     with open(steps_path, "r", encoding="utf-8") as handle:
         parsed = parse_steps_jsonl(handle.read())

@@ -338,8 +338,8 @@ if __name__ == "__main__":
                     "subagent_result": {
                         "success": True,
                         "status": "completed",
-                        "role": "explore",
-                        "mode": "readonly",
+                        "role": "review",
+                        "mode": "process",
                         "summary": "found issue",
                         "artifacts": [],
                     }

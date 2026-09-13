@@ -1,3 +1,5 @@
+import os
+
 from read_file import read_file
 from write_file import write_file
 from edit_file import edit_file
@@ -13,6 +15,7 @@ from scratchpad import execute_scratchpad
 from render_file_context import drop_read_cache
 from job_progress import emit_substep
 from conflict import execute_conflict
+from subagent_capabilities import is_allowed, normalize_subagent_role
 from subagent_runner import log_subagent_result, run_subagent
 from propagate_module_io_change import queue_dependency_cascade, snapshot_pre_content
 
@@ -233,6 +236,17 @@ def execute_api_call(
         return result
 
     try:
+        subagent_depth = max(0, int(os.environ.get("AGENT_SUBAGENT_DEPTH", "0") or 0))
+        if subagent_depth >= 1:
+            subagent_role = normalize_subagent_role(
+                os.environ.get("AGENT_SUBAGENT_ROLE", "review")
+            )
+            if not is_allowed(subagent_role, url):
+                result["error"] = (
+                    f"{url} is not available to {subagent_role} subagents"
+                )
+                return result
+
         if url == "/read":
             path = payload.get("path")
 
@@ -590,27 +604,24 @@ def execute_api_call(
 
         if url == "/subagent":
             pre_cache = dict(read_cache) if isinstance(read_cache, dict) else {}
-            mode = payload.get("mode", "process")
-            role = payload.get("role", "explore")
+            role = normalize_subagent_role(payload.get("role", "review"))
             print(
-                f"[Subagent] start mode={mode} role={role} "
+                f"[Subagent] start role={role} "
                 f"task={str(payload.get('task') or '')[:200]!r}",
                 flush=True,
             )
             subagent_result = run_subagent(
                 task=payload.get("task"),
                 role=role,
-                mode=mode,
                 files=payload.get("files", []),
                 timeout_seconds=payload.get("timeout_seconds", 1200),
             )
             log_subagent_result(
                 subagent_result,
-                mode=mode,
                 role=role,
                 task=payload.get("task"),
             )
-            if mode == "process":
+            if role == "implement":
                 for artifact in list(subagent_result.get("artifacts") or []):
                     art = str(artifact or "").strip()
                     if not art:

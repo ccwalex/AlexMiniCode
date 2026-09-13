@@ -50,7 +50,6 @@ LEGACY_RELAY_MODELS = {
 
 LLM_ROLES = (
     "main_planner",
-    "subagent_explore",
     "subagent_review",
     "subagent_implement",
     "meta_writer",
@@ -63,7 +62,6 @@ LLM_ROLES = (
 
 ROLE_LABELS = {
     "main_planner": "Main planner",
-    "subagent_explore": "Subagent — explore",
     "subagent_review": "Subagent — review",
     "subagent_implement": "Subagent — implement",
     "meta_writer": "Meta writer",
@@ -85,7 +83,7 @@ PARSE_FALLBACK_LABELS = {
 }
 
 CONFIG_REL_PATH = "agent_memory/model_config.json"
-SUBAGENT_ROLES = ("subagent_explore", "subagent_review", "subagent_implement")
+SUBAGENT_ROLES = ("subagent_review", "subagent_implement")
 _role_overrides: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "llm_role_overrides",
     default=None,
@@ -147,8 +145,6 @@ def _default_role_config(role: str) -> dict:
         defaults.update({"effort": "l", "max_tokens": 4096})
     elif role == "discussion":
         defaults.update({"effort": "l"})
-    elif role == "subagent_explore":
-        defaults.update({"effort": "l", "max_tokens": 8192})
     elif role == "subagent_review":
         defaults.update({"effort": "m", "max_tokens": 8192})
 
@@ -214,6 +210,9 @@ def normalize_model_config(config: dict | None) -> dict:
     base = default_model_config()
     config = config if isinstance(config, dict) else {}
     roles_in = config.get("roles") if isinstance(config.get("roles"), dict) else {}
+    if isinstance(roles_in.get("subagent_explore"), dict) and "subagent_review" not in roles_in:
+        roles_in = dict(roles_in)
+        roles_in["subagent_review"] = roles_in["subagent_explore"]
 
     roles_out = {}
     for role in LLM_ROLES:
@@ -355,11 +354,11 @@ if __name__ == "__main__":
     assert set(cfg["roles"]) == set(LLM_ROLES)
     assert set(cfg["parse_fallbacks"]) == set(PARSE_FALLBACK_KINDS)
     assert get_role_config("main_planner")["source"] == "opencode"
-    with role_override_scope({"subagent_explore": {"model": "override-model", "source": "cursor"}}):
-        overridden = get_role_config("subagent_explore")
+    with role_override_scope({"subagent_review": {"model": "override-model", "source": "cursor"}}):
+        overridden = get_role_config("subagent_review")
         assert overridden["model"] == "override-model"
         assert overridden["source"] == "cursor"
-    assert get_role_config("subagent_explore")["model"] != "override-model"
+    assert get_role_config("subagent_review")["model"] != "override-model"
     assert get_parse_fallback("execution")["model"]
     saved = save_model_config(cfg)
     assert saved["roles"]["debug"]["model"] == "deepseek-v4-flash"

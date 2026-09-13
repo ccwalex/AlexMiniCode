@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -31,7 +30,6 @@ class SubagentDelegationTests(unittest.TestCase):
                     "payload": {
                         "task": "Inspect the parser",
                         "role": "review",
-                        "mode": "readonly",
                         "files": ["agent/modules/parse_api_plan.py"],
                     },
                 }
@@ -40,9 +38,17 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertTrue(parsed["success"], parsed)
         payload = parsed["calls"][0]["payload"]
         self.assertEqual(payload["timeout_seconds"], 1200)
+        self.assertEqual(payload["role"], "review")
         self.assertEqual(payload["files"], ["agent/modules/parse_api_plan.py"])
 
-    def test_parser_rejects_nonfinal_or_mutating_readonly_subagent(self):
+    def test_parser_aliases_explore_to_review(self):
+        parsed = parse_api_plan(
+            [{"url": "/subagent", "payload": {"task": "inspect", "role": "explore"}}]
+        )
+        self.assertTrue(parsed["success"], parsed)
+        self.assertEqual(parsed["calls"][0]["payload"]["role"], "review")
+
+    def test_parser_rejects_nonfinal_or_legacy_mode(self):
         nonfinal = parse_api_plan(
             [
                 {"url": "/subagent", "payload": {"task": "inspect"}},
@@ -52,7 +58,7 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertFalse(nonfinal["success"])
         self.assertIn("/subagent cannot be followed", nonfinal["error"])
 
-        mutating = parse_api_plan(
+        legacy_mode = parse_api_plan(
             [
                 {
                     "url": "/subagent",
@@ -64,8 +70,8 @@ class SubagentDelegationTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertFalse(mutating["success"])
-        self.assertIn("requires process mode", mutating["error"])
+        self.assertFalse(legacy_mode["success"])
+        self.assertIn("mode is no longer supported", legacy_mode["error"])
 
     def test_api_surfaces_child_failure_without_entering_debug_failure(self):
         child = {
@@ -92,7 +98,33 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertTrue(result["request_feedback"])
         self.assertEqual(result["output"]["subagent_result"], child)
         self.assertEqual(read_cache["agent/changed.py"], "stale")
-        self.assertEqual(read_cache["agent/other.py"], "keep")
+        queue_cascade.assert_not_called()
+
+    def test_implement_subagent_queues_dependency_cascade_for_artifacts(self):
+        child = {
+            "success": True,
+            "status": "completed",
+            "role": "implement",
+            "mode": "process",
+            "summary": "Patched file",
+            "artifacts": ["agent/changed.py"],
+        }
+        with patch.object(api_module, "run_subagent", return_value=child), patch.object(
+            api_module, "read_file", return_value=(True, "new")
+        ), patch.object(
+            api_module, "refresh_after_file_change"
+        ), patch.object(
+            api_module, "queue_dependency_cascade"
+        ) as queue_cascade:
+            read_cache = {"agent/changed.py": "stale"}
+            result = api_module.execute_api_call(
+                {
+                    "url": "/subagent",
+                    "payload": {"task": "Implement fix", "role": "implement"},
+                },
+                read_cache=read_cache,
+            )
+        self.assertTrue(result["success"])
         queue_cascade.assert_called_once()
 
     def test_parent_feedback_is_summary_only_and_bounded(self):
@@ -104,7 +136,7 @@ class SubagentDelegationTests(unittest.TestCase):
                         "subagent_result": {
                             "success": True,
                             "status": "completed",
-                            "role": "explore",
+                            "role": "review",
                             "mode": "process",
                             "summary": "x" * 10000,
                             "artifacts": ["agent/a.py"],
@@ -123,21 +155,13 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertNotIn("read_cache", feedback)
         self.assertLessEqual(len(feedback), 1240)
 
-    def test_readonly_mode_is_one_llm_call_with_no_worker(self):
-        response = {"content": "Review result"}
-        with patch.object(runner, "call_llm_role", return_value=response) as llm_call, patch.object(
-            runner.subprocess, "Popen"
-        ) as popen:
-            result = runner.run_subagent(
-                "Review behavior",
-                role="review",
-                mode="readonly",
-                files=[],
+    def test_review_child_blocks_write_at_runtime(self):
+        with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "review"}):
+            result = api_module.execute_api_call(
+                {"url": "/write", "payload": {"path": "a.py", "content": "x"}},
             )
-        self.assertTrue(result["success"], result)
-        self.assertEqual(result["summary"], "Review result")
-        llm_call.assert_called_once()
-        popen.assert_not_called()
+        self.assertFalse(result["success"])
+        self.assertIn("not available to review subagents", result["error"])
 
     def test_process_mode_launches_isolated_worker_and_filters_result(self):
         class FakeProcess:
@@ -175,7 +199,6 @@ class SubagentDelegationTests(unittest.TestCase):
             result = runner.run_subagent(
                 "Implement one change",
                 role="implement",
-                mode="process",
                 files=[],
             )
         self.assertTrue(result["success"], result)
@@ -184,6 +207,7 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertNotIn("run_state", result)
         self.assertNotIn("read_cache", result)
         self.assertEqual(captured["env"]["AGENT_SUBAGENT_DEPTH"], "1")
+        self.assertEqual(captured["env"]["AGENT_SUBAGENT_ROLE"], "implement")
         self.assertTrue(captured["start_new_session"])
 
     def test_process_timeout_terminates_child_process_group(self):
@@ -205,8 +229,7 @@ class SubagentDelegationTests(unittest.TestCase):
         ):
             result = runner.run_subagent(
                 "Slow task",
-                role="explore",
-                mode="process",
+                role="review",
                 timeout_seconds=1,
             )
         self.assertFalse(result["success"])
@@ -236,7 +259,6 @@ class SubagentDelegationTests(unittest.TestCase):
             result = runner.run_subagent(
                 "Task missing summary",
                 role="implement",
-                mode="process",
             )
         self.assertFalse(result["success"])
         self.assertIn("empty /done summary", result["error"])
@@ -245,63 +267,76 @@ class SubagentDelegationTests(unittest.TestCase):
         with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "1"}), patch.object(
             runner.subprocess, "Popen"
         ) as popen:
-            result = runner.run_subagent("Nested task", mode="process")
+            result = runner.run_subagent("Nested task", role="review")
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "rejected")
         popen.assert_not_called()
 
-        with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "1"}), patch.object(
-            runner, "call_llm_role"
-        ) as llm_call:
-            readonly = runner.run_subagent("Nested review", mode="readonly")
-        self.assertFalse(readonly["success"])
-        self.assertEqual(readonly["status"], "rejected")
-        llm_call.assert_not_called()
-
-    @unittest.skipUnless(hasattr(runner.signal, "setitimer"), "Unix timer required")
-    def test_readonly_deadline_interrupts_hung_call(self):
-        with self.assertRaises(TimeoutError):
-            runner._call_with_timeout(lambda: time.sleep(1), 0.01)
-
     def test_subagent_roles_exist_and_child_prompt_hides_delegation(self):
-        for role in ("subagent_explore", "subagent_review", "subagent_implement"):
+        for role in ("subagent_review", "subagent_implement"):
             self.assertTrue(get_role_config(role)["model"])
 
         with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "0"}):
             parent_prompt, _ = prompt_module.build_prompt_v2("task")
-        with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "1"}):
+        with patch.dict(
+            os.environ,
+            {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "review"},
+        ):
             child_prompt, _ = prompt_module.build_prompt_v2("task")
         self.assertIn("5. /subagent", parent_prompt)
         self.assertNotIn("5. /subagent", child_prompt)
+
+    def test_review_child_prompt_omits_blocked_endpoints(self):
+        with patch.dict(
+            os.environ,
+            {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "review"},
+        ):
+            review_prompt, _ = prompt_module.build_prompt_v2("task")
+        endpoints = review_prompt.split("<endpoints>")[1].split("</endpoints>")[0]
+        self.assertIn("1. /read", endpoints)
+        self.assertNotIn(". /write", endpoints)
+        self.assertNotIn(". /edit", endpoints)
+        self.assertNotIn("/write_llm_memory", endpoints)
+        self.assertNotIn("/conflict", endpoints)
+
+    def test_implement_child_prompt_includes_write_edit(self):
+        with patch.dict(
+            os.environ,
+            {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "implement"},
+        ):
+            implement_prompt, _ = prompt_module.build_prompt_v2("task")
+        self.assertIn("/write", implement_prompt)
+        self.assertIn("/edit", implement_prompt)
+        self.assertNotIn("5. /subagent", implement_prompt)
 
     def test_parent_prompt_describes_subagent_context_isolation(self):
         with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "0"}):
             parent_prompt, _ = prompt_module.build_prompt_v2("task")
         self.assertIn("What each subagent receives", parent_prompt)
         self.assertIn("What subagents do NOT receive", parent_prompt)
-        self.assertIn("readonly mode", parent_prompt)
-        self.assertIn("process mode", parent_prompt)
+        self.assertIn("review role", parent_prompt)
+        self.assertIn("implement role", parent_prompt)
         self.assertIn("Subagents are context-isolated", parent_prompt)
 
     def test_per_job_role_overrides_apply_to_subagent_roles(self):
         with role_override_scope(
             {
-                "subagent_explore": {
+                "subagent_review": {
                     "source": "cursor",
-                    "model": "job-explore",
+                    "model": "job-review",
                     "effort": "h",
                     "max_tokens": 1111,
                 }
             }
         ):
-            cfg = get_role_config("subagent_explore")
+            cfg = get_role_config("subagent_review")
             planner = get_role_config("main_planner")
-        self.assertEqual(cfg["model"], "job-explore")
+        self.assertEqual(cfg["model"], "job-review")
         self.assertEqual(cfg["source"], "cursor")
         self.assertEqual(cfg["effort"], "h")
         self.assertEqual(cfg["max_tokens"], 1111)
-        self.assertNotEqual(planner.get("model"), "job-explore")
-        self.assertNotEqual(get_role_config("subagent_explore")["model"], "job-explore")
+        self.assertNotEqual(planner.get("model"), "job-review")
+        self.assertNotEqual(get_role_config("subagent_review")["model"], "job-review")
 
     def test_main_loop_replans_with_only_subagent_summary(self):
         prompts = []
@@ -326,8 +361,8 @@ class SubagentDelegationTests(unittest.TestCase):
                                 "subagent_result": {
                                     "success": True,
                                     "status": "completed",
-                                    "role": "explore",
-                                    "mode": "readonly",
+                                    "role": "review",
+                                    "mode": "process",
                                     "summary": "Found the relevant call site",
                                     "artifacts": [],
                                     "run_state": {"hidden": True},
@@ -377,11 +412,11 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertNotIn("read_cache", prompts[1])
         self.assertNotIn("run_state", prompts[1])
 
-    def test_parser_accepts_trailing_readonly_batch(self):
+    def test_parser_accepts_trailing_review_batch(self):
         parsed = parse_api_plan(
             [
-                {"url": "/subagent", "payload": {"task": "one", "mode": "readonly"}},
-                {"url": "/subagent", "payload": {"task": "two", "mode": "readonly", "role": "review"}},
+                {"url": "/subagent", "payload": {"task": "one", "role": "review"}},
+                {"url": "/subagent", "payload": {"task": "two", "role": "review"}},
             ]
         )
         self.assertTrue(parsed["success"], parsed)
@@ -402,9 +437,9 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertFalse(too_many["success"])
         self.assertIn("at most", too_many["error"])
 
-    def test_parallel_readonly_subagents_do_not_reenter_same_context(self):
+    def test_parallel_review_subagents_do_not_reenter_same_context(self):
         specs = [
-            {"task": f"task-{index}", "role": "explore", "mode": "readonly", "timeout_seconds": 5}
+            {"task": f"task-{index}", "timeout_seconds": 5}
             for index in range(4)
         ]
         with patch.object(
@@ -413,13 +448,13 @@ class SubagentDelegationTests(unittest.TestCase):
             side_effect=lambda **kwargs: {
                 "success": True,
                 "status": "completed",
-                "role": kwargs.get("role", "explore"),
-                "mode": "readonly",
+                "role": "review",
+                "mode": "process",
                 "summary": kwargs.get("task", ""),
                 "artifacts": [],
             },
         ) as run_subagent:
-            results = runner.run_readonly_subagents_parallel(specs)
+            results = runner.run_review_subagents_parallel(specs)
         self.assertEqual(len(results), 4)
         self.assertTrue(all(item.get("success") for item in results))
         self.assertEqual(run_subagent.call_count, 4)
@@ -428,23 +463,23 @@ class SubagentDelegationTests(unittest.TestCase):
             " ".join(str(item.get("error") or "") for item in results),
         )
 
-    def test_execute_plan_runs_readonly_batch_in_parallel_helper(self):
+    def test_execute_plan_runs_review_batch_in_parallel_helper(self):
         import modules.execute_api_plan as plan_module
 
         calls = [
-            {"url": "/subagent", "payload": {"task": "one", "role": "explore", "mode": "readonly"}},
-            {"url": "/subagent", "payload": {"task": "two", "role": "review", "mode": "readonly"}},
+            {"url": "/subagent", "payload": {"task": "one", "role": "review"}},
+            {"url": "/subagent", "payload": {"task": "two", "role": "review"}},
         ]
         child = {
             "success": True,
             "status": "completed",
-            "role": "explore",
-            "mode": "readonly",
+            "role": "review",
+            "mode": "process",
             "summary": "ok",
             "artifacts": [],
         }
         with patch.object(
-            plan_module, "run_readonly_subagents_parallel", return_value=[child, dict(child, role="review")]
+            plan_module, "run_review_subagents_parallel", return_value=[child, dict(child)]
         ) as parallel, patch.object(plan_module, "execute_api_call") as sequential:
             result = plan_module.execute_api_plan(calls)
         self.assertTrue(result["success"], result)
@@ -453,12 +488,12 @@ class SubagentDelegationTests(unittest.TestCase):
         parallel.assert_called_once()
         sequential.assert_not_called()
 
-    def test_execute_plan_runs_mixed_batch_sequentially(self):
+    def test_execute_plan_runs_mixed_batch_review_parallel_then_implement(self):
         import modules.execute_api_plan as plan_module
 
         calls = [
-            {"url": "/subagent", "payload": {"task": "impl", "role": "implement", "mode": "process"}},
-            {"url": "/subagent", "payload": {"task": "rev", "role": "review", "mode": "readonly"}},
+            {"url": "/subagent", "payload": {"task": "impl", "role": "implement"}},
+            {"url": "/subagent", "payload": {"task": "rev", "role": "review"}},
         ]
         seen = []
 
@@ -475,43 +510,36 @@ class SubagentDelegationTests(unittest.TestCase):
                 "error": None,
             }
 
-        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute) as sequential, patch.object(
-            plan_module, "run_readonly_subagents_parallel"
-        ) as parallel:
+        with patch.object(
+            plan_module,
+            "run_review_subagents_parallel",
+            return_value=[{"success": True, "summary": "rev"}],
+        ) as parallel, patch.object(
+            plan_module, "execute_api_call", side_effect=fake_execute
+        ) as sequential:
             result = plan_module.execute_api_plan(calls)
         self.assertTrue(result["success"], result)
-        self.assertEqual(seen, ["impl", "rev"])
+        parallel.assert_called_once()
+        sequential.assert_called_once()
+        self.assertEqual(seen, ["impl"])
         self.assertEqual(len(result["results"]), 2)
-        sequential.assert_called()
-        parallel.assert_not_called()
 
     def test_execute_plan_continues_from_read_into_trailing_subagent(self):
         import modules.execute_api_plan as plan_module
 
         calls = [
             {"url": "/read", "payload": {"path": "a.py"}},
-            {"url": "/subagent", "payload": {"task": "review a.py", "role": "review", "mode": "readonly"}},
+            {"url": "/subagent", "payload": {"task": "review a.py", "role": "review"}},
         ]
         seen = []
 
         def fake_execute(call, **kwargs):
             seen.append(call["url"])
-            if call["url"] == "/read":
-                return {
-                    "success": True,
-                    "url": "/read",
-                    "payload": call["payload"],
-                    "output": {"content": "abc"},
-                    "error": None,
-                    "done": False,
-                    "conflict": False,
-                    "request_feedback": True,
-                }
             return {
                 "success": True,
-                "url": "/subagent",
+                "url": "/read",
                 "payload": call["payload"],
-                "output": {"subagent_result": {"success": True, "summary": "reviewed"}},
+                "output": {"content": "abc"},
                 "error": None,
                 "done": False,
                 "conflict": False,
@@ -519,14 +547,16 @@ class SubagentDelegationTests(unittest.TestCase):
             }
 
         with patch.object(plan_module, "execute_api_call", side_effect=fake_execute), patch.object(
-            plan_module, "run_readonly_subagents_parallel"
+            plan_module,
+            "run_review_subagents_parallel",
+            return_value=[{"success": True, "summary": "reviewed"}],
         ) as parallel:
             result = plan_module.execute_api_plan(calls)
         self.assertTrue(result["success"], result)
         self.assertEqual(result["status"], "request_feedback")
-        self.assertEqual(seen, ["/read", "/subagent"])
+        self.assertEqual(seen, ["/read"])
         self.assertEqual([item["url"] for item in result["results"]], ["/read", "/subagent"])
-        parallel.assert_not_called()
+        parallel.assert_called_once()
         feedback = subagent_feedback_from_execution_result(result)
         self.assertIn("<subagent_result>", feedback)
         self.assertIn("reviewed", feedback)
@@ -537,33 +567,32 @@ class SubagentDelegationTests(unittest.TestCase):
         calls = [
             {"url": "/read", "payload": {"path": "a.py"}},
             {"url": "/write", "payload": {"path": "b.py", "content": "x"}},
-            {"url": "/subagent", "payload": {"task": "review", "role": "review", "mode": "readonly"}},
+            {"url": "/subagent", "payload": {"task": "review", "role": "review"}},
         ]
         seen = []
 
         def fake_execute(call, **kwargs):
             seen.append(call["url"])
-            url = call["url"]
             return {
                 "success": True,
-                "url": url,
+                "url": call["url"],
                 "payload": call["payload"],
-                "output": (
-                    {"subagent_result": {"success": True, "summary": "ok"}}
-                    if url == "/subagent"
-                    else {"ok": True}
-                ),
+                "output": {"ok": True},
                 "error": None,
                 "done": False,
                 "conflict": False,
-                "request_feedback": url in {"/read", "/subagent"},
+                "request_feedback": call["url"] == "/read",
             }
 
-        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute):
+        with patch.object(plan_module, "execute_api_call", side_effect=fake_execute), patch.object(
+            plan_module,
+            "run_review_subagents_parallel",
+            return_value=[{"success": True, "summary": "ok"}],
+        ):
             result = plan_module.execute_api_plan(calls)
         self.assertTrue(result["success"], result)
         self.assertEqual(result["status"], "request_feedback")
-        self.assertEqual(seen, ["/read", "/write", "/subagent"])
+        self.assertEqual(seen, ["/read", "/write"])
 
 
 if __name__ == "__main__":

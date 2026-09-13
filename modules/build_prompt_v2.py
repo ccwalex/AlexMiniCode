@@ -5,6 +5,7 @@ from scratchpad import get_scratchpad_endpoint_doc, render_scratchpad_block
 from render_file_context import get_drop_cache_endpoint_doc
 from conflict import get_conflict_endpoint_doc
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
+from subagent_capabilities import allowed_endpoints, normalize_subagent_role
 
 MODULE_METADATA = {
     "name": "build_prompt_v2",
@@ -26,6 +27,194 @@ MODULE_METADATA = {
         }
     ]
 }
+
+
+def _include_endpoint(allowed, url):
+    return allowed is None or url in allowed
+
+
+def _build_endpoints_block(allowed, subagent_doc, loop="main"):
+    """Build numbered endpoint docs; allowed=None means parent planner (all endpoints)."""
+    parts = []
+    index = 1
+
+    if _include_endpoint(allowed, "/read"):
+        parts.append(
+            f"""{index}. /read
+
+Use when file content or block table is needed before deciding.
+
+Payload:
+{{
+  "path": "relative/path"
+}}
+
+Rules:
+- Use /read only when necessary file content is not already attached.
+- Do not read the same file repeatedly unless the file may have changed.
+- If many files must be reviewed before deciding, prefer trailing /subagent review calls instead of /read for every path.
+- If /read is used only so you can inspect before deciding, /request_feedback should usually be the final call.
+- If this turn already includes a trailing /subagent batch, those calls may follow /read in the same turn."""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/write"):
+        parts.append(
+            f"""{index}. /write
+
+Use for new files, small files, or intentional full-file overwrite.
+
+Payload:
+{{
+  "path": "relative/path",
+  "content": "complete file content"
+}}
+
+Rules:
+- /write content must be complete file content.
+- For large JSX/TSX refactors, prefer /write with complete corrected file content after reading the target file.
+- Do not write partial fragments unless the target file is intentionally a fragment file."""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/edit"):
+        parts.append(
+            f"""{index}. /edit
+
+Use for structured modify-in-place edits to existing files.
+
+Payload:
+{{
+  "path": "relative/path",
+  "edit_fn": "def edit(code):\\n    for block in code.blocks():\\n        text = code.get(block['id'])\\n        if 'old_text' in text:\\n            code.replace_text(block['id'], 'old_text', 'new_text', all=True)\\n    return code"
+}}
+
+Rules for /edit:
+- The edit_fn receives a CodeEdit object named code.
+- Do not assume block["content"] exists.
+- Use code.get(block["id"]) to inspect a block.
+- Select block IDs from block tables provided in context.
+- If no relevant block table/content is available, use /read first.
+
+Valid CodeEdit methods:
+- code.blocks() -> list of blocks
+- code.get(block_id) -> exact block text
+- code.replace(block_id, content)
+- code.replace_text(block_id, old, new, all=True)
+- code.insert_before(block_id, text)
+- code.insert_after(block_id, text)
+- code.append_inside(block_id, text)
+- code.delete(block_id)
+
+Important:
+- insert_before, insert_after, append_inside, and delete take a block_id, not raw text.
+- insert_before and insert_after do not accept all=True.
+- For string replacement inside a block, use replace_text(block_id, old, new, all=True).
+- If changes are large, nested, or JSX/TSX-heavy, prefer /write with complete corrected file content instead of fragile /edit code."""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/shell"):
+        parts.append(
+            f"""{index}. /shell
+
+Use for execution, validation, or inspection only.
+
+Payload:
+{{
+  "cmd": "shell command"
+}}
+
+Rules:
+- Do not use shell redirection for file writes.
+- Do not use >, >>, heredocs, sed -i, tee, or echo-to-file to modify files.
+- File creation/modification must use /write or /edit.
+- Shell inspection commands such as ls, cat, head, tail, grep, find, wc may be used to inspect.
+- If shell inspection output is needed before deciding next steps, /request_feedback should usually be the final call.
+- If this turn already includes a trailing /subagent batch, those calls may follow inspection /shell in the same turn."""
+        )
+        index += 1
+
+    if subagent_doc:
+        parts.append(subagent_doc.strip())
+        index = index  # subagent_doc includes its own numbering
+
+    if _include_endpoint(allowed, "/request_feedback"):
+        parts.append(
+            f"""{index}. /request_feedback
+
+Use to ask backend to return successful read/inspection outputs for the next planner turn.
+
+Payload:
+{{}}
+
+Use when:
+- /read was used.
+- /shell inspection was used and output is needed.
+- Intermediate information is needed before editing/writing.
+
+Rules:
+- If used, /request_feedback must be the final call in the planner turn.
+- Do not use /request_feedback as an error handler.
+- Validation rejection is handled by local repair.
+- Execution failure goes to debug planning."""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/done"):
+        parts.append(
+            f"""{index}. /done
+
+Use when the task is complete.
+
+Payload:
+{{
+  "summary": "brief summary"
+}}"""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/write_llm_memory"):
+        parts.append(
+            f"""{index}. /write_llm_memory
+
+Use only when a reusable lesson, bug pattern, or workaround was discovered.
+Do not store raw logs.
+Do not store one-off task details.
+Do not store large code blocks.
+Do not use this for normal task summaries.
+
+Payload:
+{{
+  "issue": "short description of reusable problem",
+  "solution": "short reusable fix/workaround",
+  "check": "short string/pattern to watch for later",
+  "confidence": "high|medium|low"
+}}"""
+        )
+        index += 1
+
+    if _include_endpoint(allowed, "/scratchpad"):
+        scratchpad_doc = get_scratchpad_endpoint_doc(loop)
+        if allowed is not None:
+            scratchpad_doc = scratchpad_doc.replace("9. /scratchpad", f"{index}. /scratchpad")
+            scratchpad_doc = scratchpad_doc.replace("8. /scratchpad", f"{index}. /scratchpad")
+        parts.append(scratchpad_doc.strip())
+        index += 1
+
+    if _include_endpoint(allowed, "/drop_cache"):
+        drop_doc = get_drop_cache_endpoint_doc(loop)
+        if allowed is not None:
+            drop_doc = drop_doc.replace("10. /drop_cache", f"{index}. /drop_cache")
+            drop_doc = drop_doc.replace("9. /drop_cache", f"{index}. /drop_cache")
+        parts.append(drop_doc.strip())
+        index += 1
+
+    if _include_endpoint(allowed, "/conflict"):
+        conflict_doc = get_conflict_endpoint_doc(loop)
+        parts.append(conflict_doc.strip())
+
+    return "\n\n".join(parts)
 
 
 def build_prompt_v2(
@@ -75,46 +264,38 @@ def build_prompt_v2(
 Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
 
 Strongly prefer /subagent over reading many files in the parent turn.
-When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing readonly /subagent calls instead of a long /read batch.
-Multiple readonly /subagent calls in one trailing batch run in parallel.
+When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing review /subagent calls instead of a long /read batch.
+All review /subagent calls in one trailing batch run in parallel; implement subagents run sequentially.
 
 What each subagent receives (tailor dispatch to this):
 - task: your delegated brief, wrapped as <delegated_task>. This is the only parent-authored narrative the subagent sees.
 - files: up to 20 project-relative paths read fresh from disk and attached as <file_context>.
-- role: explore, review, or implement — selects a model profile tuned for that job type.
-- mode: readonly or process — controls capabilities (below).
+- role: review or implement — selects a model profile and capability set.
 
 What subagents do NOT receive:
 - Parent read_cache, scratchpad, shell output, execution_notes, or prior planner turns.
 - Any context not explicitly placed in task or files.
 
 What the parent gets back:
-- A bounded summary (about 4000 chars), success/status, and artifact paths changed by process-mode subagents.
+- A bounded summary (about 4000 chars), success/status, and artifact paths changed by implement subagents.
 - Subagent internal reads, logs, scratchpads, and planner traces are discarded.
 
-readonly mode (explore/review only; implement is rejected):
-- One fast LLM analysis call over task + supplied file_context only.
-- Cannot /read more files, /shell, /write, /edit, or delegate further.
+review role:
+- Isolated process worker with /read, /shell, /scratchpad, /drop_cache, /request_feedback, /done.
+- Cannot /write, /edit, or delegate further.
 - Best for: code review, tracing call flow, comparing modules, returning a concise map/verdict.
-- Put every file the subagent must inspect in files. Put goals, hypotheses, constraints, and deliverable format in task.
+- Attach starting files in files; the subagent may /read additional paths itself.
 
-process mode (all roles; use for implement):
-- A fresh isolated planner subprocess with /read, /write, /edit, /shell (but no nested /subagent).
-- Starts with task + files only; may /read additional paths itself.
+implement role:
+- Isolated process worker with full tools except nested /subagent.
+- Can /read, /write, /edit, /shell, /scratchpad, /drop_cache.
+- Best for: bounded implementation with its own validation.
 - Ends with /done; parent receives the /done summary and successful write/edit paths.
-- Best for: bounded implementation, validation runs, multi-step investigation needing tools.
-- Still self-contained: paste critical shell excerpts or decision context into task; attach likely starting files in files.
-
-Good uses:
-- explore readonly: locate where behavior lives; return affected paths and call graph
-- review readonly: compare several related files; return root cause or verdict
-- implement process: one bounded patch with its own validation
 
 Payload:
 {
   "task": "self-contained brief: goal, constraints, hypotheses, expected deliverable",
-  "role": "explore|review|implement",
-  "mode": "process|readonly",
+  "role": "review|implement",
   "files": ["paths/the/subagent/needs.py"],
   "timeout_seconds": 1200
 }
@@ -122,17 +303,27 @@ Payload:
 Tailoring rules:
 - Write task as if for a colleague with no prior chat history.
 - Include an explicit deliverable: bullet findings, path list, root cause, patch plan, or verdict.
-- For readonly, list all files to analyze in files — the subagent cannot fetch more.
-- For process, attach starting files in files but allow the subagent to /read neighbors as needed.
+- Attach starting files in files; review subagents may /read neighbors as needed.
 - Paste short critical facts from parent /shell or prior findings into task; do not assume the subagent saw them.
-- Split parallel readonly batches by area (e.g. backend vs frontend), not duplicate overlapping file sets.
-- Prefer readonly explore/review before parent /read when many files must be surveyed.
+- Split parallel review batches by area (e.g. backend vs frontend), not duplicate overlapping file sets.
+- Prefer review subagents before parent /read when many files must be surveyed.
 
 Batch rules:
-- Emit 2-8 focused readonly /subagent calls in one trailing batch when work spans multiple areas.
+- Emit 2-8 focused review /subagent calls in one trailing batch when work spans multiple areas.
 - /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
+- In mixed batches, all review subagents run in parallel first, then implement subagents run one at a time.
 """
+
+    subagent_allowed = None
+    if subagent_depth >= 1:
+        try:
+            subagent_role = normalize_subagent_role(
+                os.environ.get("AGENT_SUBAGENT_ROLE", "review")
+            )
+        except ValueError:
+            subagent_role = "review"
+        subagent_allowed = allowed_endpoints(subagent_role)
 
     system_prompt = f"""
 {SYSTEM_PROMPT_OVERRIDE_BLOCK}
@@ -149,7 +340,7 @@ Rules:
 - Do not wrap JSON in code fences.
 - Do not read unnecessary files if metadata / task already provides enough information
 - minimize iterations by request_feedback, read all necessary files at once instead of multiple iterations
-- for broad exploration or review across many files, prefer trailing readonly /subagent calls over parent /read of every path
+- for broad exploration or review across many files, prefer trailing review /subagent calls over parent /read of every path
 - verification tests are not necessary unless explicitly prompted.
 </system>
 
@@ -179,136 +370,7 @@ Correct output example:
 </output_format>
 
 <endpoints>
-1. /read
-
-Use when file content or block table is needed before deciding.
-
-Payload:
-{{
-  "path": "relative/path"
-}}
-
-Rules:
-- Use /read only when necessary file content is not already attached.
-- Do not read the same file repeatedly unless the file may have changed.
-- If many files must be reviewed before deciding, prefer trailing readonly /subagent explore or review calls instead of /read for every path.
-- If /read is used only so you can inspect before deciding, /request_feedback should usually be the final call.
-- If this turn already includes a trailing /subagent batch, those calls may follow /read in the same turn.
-
-2. /write
-
-Use for new files, small files, or intentional full-file overwrite.
-
-Payload:
-{{
-  "path": "relative/path",
-  "content": "complete file content"
-}}
-
-Rules:
-- /write content must be complete file content.
-- For large JSX/TSX refactors, prefer /write with complete corrected file content after reading the target file.
-- Do not write partial fragments unless the target file is intentionally a fragment file.
-
-3. /edit
-
-Use for structured modify-in-place edits to existing files.
-
-Payload:
-{{
-  "path": "relative/path",
-  "edit_fn": "def edit(code):\\n    for block in code.blocks():\\n        text = code.get(block['id'])\\n        if 'old_text' in text:\\n            code.replace_text(block['id'], 'old_text', 'new_text', all=True)\\n    return code"
-}}
-
-Rules for /edit:
-- The edit_fn receives a CodeEdit object named code.
-- Do not assume block["content"] exists.
-- Use code.get(block["id"]) to inspect a block.
-- Select block IDs from block tables provided in context.
-- If no relevant block table/content is available, use /read first.
-
-Valid CodeEdit methods:
-- code.blocks() -> list of blocks
-- code.get(block_id) -> exact block text
-- code.replace(block_id, content)
-- code.replace_text(block_id, old, new, all=True)
-- code.insert_before(block_id, text)
-- code.insert_after(block_id, text)
-- code.append_inside(block_id, text)
-- code.delete(block_id)
-
-Important:
-- insert_before, insert_after, append_inside, and delete take a block_id, not raw text.
-- insert_before and insert_after do not accept all=True.
-- For string replacement inside a block, use replace_text(block_id, old, new, all=True).
-- If changes are large, nested, or JSX/TSX-heavy, prefer /write with complete corrected file content instead of fragile /edit code.
-
-4. /shell
-
-Use for execution, validation, or inspection only.
-
-Payload:
-{{
-  "cmd": "shell command"
-}}
-
-Rules:
-- Do not use shell redirection for file writes.
-- Do not use >, >>, heredocs, sed -i, tee, or echo-to-file to modify files.
-- File creation/modification must use /write or /edit.
-- Shell inspection commands such as ls, cat, head, tail, grep, find, wc may be used to inspect.
-- If shell inspection output is needed before deciding next steps, /request_feedback should usually be the final call.
-- If this turn already includes a trailing /subagent batch, those calls may follow inspection /shell in the same turn.
-
-{subagent_doc}
-
-6. /request_feedback
-
-Use to ask backend to return successful read/inspection outputs for the next planner turn.
-
-Payload:
-{{}}
-
-Use when:
-- /read was used.
-- /shell inspection was used and output is needed.
-- Intermediate information is needed before editing/writing.
-
-Rules:
-- If used, /request_feedback must be the final call in the planner turn.
-- Do not use /request_feedback as an error handler.
-- Validation rejection is handled by local repair.
-- Execution failure goes to debug planning.
-
-7. /done
-
-Use when the task is complete.
-
-Payload:
-{{
-  "summary": "brief summary"
-}}
-8. /write_llm_memory
-
-Use only when a reusable lesson, bug pattern, or workaround was discovered.
-Do not store raw logs.
-Do not store one-off task details.
-Do not store large code blocks.
-Do not use this for normal task summaries.
-
-Payload:
-{{
-  "issue": "short description of reusable problem",
-  "solution": "short reusable fix/workaround",
-  "check": "short string/pattern to watch for later",
-  "confidence": "high|medium|low"
-}}
-
-{get_scratchpad_endpoint_doc("main")}
-
-{get_drop_cache_endpoint_doc("main")}
-
-{get_conflict_endpoint_doc("main")}
+{_build_endpoints_block(subagent_allowed, subagent_doc, "main")}
 </endpoints>
 
 <codebase_rules>
@@ -423,11 +485,11 @@ Rules:
 {subagent_output_rules}
 <delegation_rules>
 - Subagents are the preferred way to inspect or review many files without bloating parent context.
-- When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to readonly explore/review subagents first.
+- When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to review subagents first.
 - Keep parent turns for synthesis, edits, validation, and decisions; push file-heavy reading into subagents.
 - After subagent summaries return, /read only the few files you must edit directly.
 - Subagents are context-isolated: put needed file paths in files and needed facts/constraints/deliverables in task.
-- For readonly subagents, files is the complete file set; for process subagents, files is the starting context.
+- For review subagents, files is the starting context; they may /read additional paths.
 </delegation_rules>
 
 <task_completion_rules>
@@ -435,7 +497,7 @@ Rules:
 - Do not stop after only partial completion.
 - If the task asks to create/write/modify and run/validate, include both file mutation and /shell validation.
 - If information is needed before deciding, inspect first and use /request_feedback.
-- For multi-file investigation, prefer trailing readonly /subagent calls over reading every file in the parent turn.
+- For multi-file investigation, prefer trailing review /subagent calls over reading every file in the parent turn.
 - For simple direct creation tasks, do not inspect directories first unless necessary.
 - If build/test validation fails, do not hide failure with || true.
 </task_completion_rules>

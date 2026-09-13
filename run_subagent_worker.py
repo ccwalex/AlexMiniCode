@@ -50,6 +50,8 @@ def main():
     os.environ["AGENT_SUBAGENT_DEPTH"] = "1"
     try:
         config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        role = str(config.get("role") or "review").strip().lower()
+        os.environ["AGENT_SUBAGENT_ROLE"] = role
         from modules.run_task_v2 import run_task_v2
 
         result = run_task_v2(

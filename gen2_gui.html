@@ -198,7 +198,7 @@ Do not allow shell redirection for file writes.</textarea>
 <div id="modelConfigModal" class="modal-backdrop">
 <div class="modal wide">
 <h2>Model Config</h2>
-<div class="small">Configure LLM source, model, effort, and max tokens for each agent role, including explore/review/implement subagents. Cursor model lists are fetched live and are not stored.</div>
+<div class="small">Configure LLM source, model, effort, and max tokens for each agent role, including review/implement subagents. Cursor model lists are fetched live and are not stored.</div>
 <div id="modelConfigStatus" class="small"></div>
 <table class="config-table">
 <thead><tr><th>Role</th><th>Source</th><th>Model</th><th>Effort</th><th>Max tokens</th></tr></thead>
@@ -372,7 +372,6 @@ function jobSubagentRoles(){
   const fromApi=modelConfigState?.subagent_roles;
   if(Array.isArray(fromApi) && fromApi.length) return fromApi;
   return [
-    {id:'subagent_explore',label:'Subagent — explore'},
     {id:'subagent_review',label:'Subagent — review'},
     {id:'subagent_implement',label:'Subagent — implement'}
   ];

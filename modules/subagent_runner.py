@@ -1,4 +1,4 @@
-"""Sequential, context-isolated subagent execution."""
+"""Context-isolated subagent execution via process workers."""
 
 from __future__ import annotations
 
@@ -14,58 +14,55 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
 
-from call_llm import call_llm_role
 from model_config import get_role_config
-from opencode_session import session_for
 from read_file import read_file
 from render_file_context import render_file_context
+from subagent_capabilities import normalize_subagent_role
 
 
 MODULE_METADATA = {
     "name": "subagent_runner",
     "type": "function",
-    "description": "Run one blocking subagent task in an isolated process or a read-only in-process LLM call.",
+    "description": "Run blocking subagent tasks in isolated process workers.",
     "functions": [
         {
             "name": "run_subagent",
             "inputs": {
                 "task": "str self-contained delegated task",
-                "role": "str explore, review, or implement",
-                "mode": "str process or readonly",
+                "role": "str review or implement",
                 "files": "list[str] optional project-relative context files",
                 "timeout_seconds": "int blocking timeout",
             },
             "outputs": "summary-only dict; child planner state and file cache are never returned",
         },
         {
-            "name": "run_readonly_subagents_parallel",
+            "name": "run_review_subagents_parallel",
             "inputs": {
-                "specs": "list of dicts with task, role, files, timeout_seconds"
+                "specs": "list of dicts with task, files, timeout_seconds"
             },
             "outputs": "list of summary-only dicts in spec order",
-        }
+        },
     ],
 }
 
 
 ROLE_CONFIGS = {
-    "explore": "subagent_explore",
     "review": "subagent_review",
     "implement": "subagent_implement",
 }
 MAX_RETURN_CHARS = 4000
 MAX_FILES = 20
 SUBAGENT_LOG_SUMMARY_CHARS = 2000
+SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 1200
 
 
-def log_subagent_result(result, *, mode=None, role=None, task=None):
+def log_subagent_result(result, *, role=None, task=None):
     """Print subagent status and summary explicitly for job logs."""
     result = result if isinstance(result, dict) else {}
-    mode = mode or result.get("mode") or "?"
-    role = role or result.get("role") or "explore"
+    role = role or result.get("role") or "review"
     task_text = str(task or "").strip()
     print(
-        f"[Subagent] done mode={mode} role={role} "
+        f"[Subagent] done role={role} "
         f"success={result.get('success')} status={result.get('status')} "
         f"error={str(result.get('error') or '')[:300]!r}",
         flush=True,
@@ -98,60 +95,6 @@ def _text(value, limit=MAX_RETURN_CHARS):
     return text
 
 
-def _extract_llm_text(raw):
-    if isinstance(raw, str):
-        return raw
-    if not isinstance(raw, dict):
-        return str(raw or "")
-    for key in ("content", "text", "output", "response"):
-        value = raw.get(key)
-        if isinstance(value, str):
-            return value
-    choices = raw.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        if isinstance(message.get("content"), str):
-            return message["content"]
-        if isinstance(first.get("text"), str):
-            return first["text"]
-    candidates = raw.get("candidates")
-    if isinstance(candidates, list) and candidates:
-        first = candidates[0] if isinstance(candidates[0], dict) else {}
-        content = first.get("content") if isinstance(first.get("content"), dict) else {}
-        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
-        return "".join(
-            part.get("text", "")
-            for part in parts
-            if isinstance(part, dict) and isinstance(part.get("text"), str)
-        )
-    return json.dumps(raw, ensure_ascii=False)
-
-
-def _call_with_timeout(call, timeout_seconds):
-    """Enforce an in-process deadline on Unix main-thread LLM calls."""
-    if (
-        threading.current_thread() is not threading.main_thread()
-        or not hasattr(signal, "SIGALRM")
-        or not hasattr(signal, "setitimer")
-    ):
-        return call()
-
-    def handle_timeout(signum, frame):
-        raise TimeoutError(f"subagent timed out after {timeout_seconds}s")
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, handle_timeout)
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, float(timeout_seconds))
-    try:
-        return call()
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0] > 0:
-            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
-
-
 def _load_file_context(files):
     cache = {}
     errors = []
@@ -172,11 +115,11 @@ def _load_file_context(files):
     return render_file_context(cache, path_order=normalized), errors
 
 
-def _summary_result(*, success, role, mode, status, summary, artifacts=None, run_id=None, error=None):
+def _summary_result(*, success, role, status, summary, artifacts=None, run_id=None, error=None):
     result = {
         "success": bool(success),
         "role": role,
-        "mode": mode,
+        "mode": "process",
         "status": str(status or ("completed" if success else "failed")),
         "summary": _text(summary),
         "artifacts": list(artifacts or []),
@@ -186,70 +129,6 @@ def _summary_result(*, success, role, mode, status, summary, artifacts=None, run
     if error:
         result["error"] = _text(error, 1000)
     return result
-
-
-def _run_readonly(task, role, files, timeout_seconds, session_id=None):
-    if role == "implement":
-        return _summary_result(
-            success=False,
-            role=role,
-            mode="readonly",
-            status="rejected",
-            summary="",
-            error="implement role requires process mode",
-        )
-
-    file_context, read_errors = _load_file_context(files)
-    role_name = ROLE_CONFIGS[role]
-    cfg = get_role_config(role_name)
-    system_prompt = (
-        "You are a read-only subagent. Complete only the delegated analysis task. "
-        "Do not propose tool calls, execute commands, modify files, or delegate work. "
-        "Be concise: use minimal output length, no aesthetic padding, no preamble or recap. "
-        "Return a concise, self-contained result for the parent planner."
-    )
-    user_parts = [f"<delegated_task>\n{task}\n</delegated_task>"]
-    if file_context:
-        user_parts.append(file_context)
-    if read_errors:
-        user_parts.append("<file_errors>\n" + "\n".join(read_errors) + "\n</file_errors>")
-
-    try:
-        raw = _call_with_timeout(
-            lambda: call_llm_role(
-                role=role_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": "\n\n".join(user_parts)},
-                ],
-                max_tokens=cfg.get("max_tokens"),
-                thinking=cfg.get("effort_normalized"),
-                model=cfg.get("model"),
-                source=cfg.get("source"),
-                cursor_params=cfg.get("cursor_params"),
-                timeout=timeout_seconds,
-                session_id=session_id or session_for("subagent", role, uuid.uuid4().hex[:8]),
-            ),
-            timeout_seconds,
-        )
-        summary = _extract_llm_text(raw)
-        return _summary_result(
-            success=bool(summary.strip()),
-            role=role,
-            mode="readonly",
-            status="completed" if summary.strip() else "failed",
-            summary=summary,
-            error=None if summary.strip() else "read-only subagent returned no text",
-        )
-    except Exception as exc:
-        return _summary_result(
-            success=False,
-            role=role,
-            mode="readonly",
-            status="failed",
-            summary="",
-            error=f"read-only subagent failed: {exc}",
-        )
 
 
 def _artifacts_from_result(result):
@@ -291,7 +170,6 @@ def _run_process(task, role, files, timeout_seconds):
         return _summary_result(
             success=False,
             role=role,
-            mode="process",
             status="failed",
             summary="",
             run_id=run_id,
@@ -306,6 +184,7 @@ def _run_process(task, role, files, timeout_seconds):
         stderr_path = temp_path / "stderr.log"
         config = {
             "task": "\n".join(task_parts),
+            "role": role,
             "model": role_cfg.get("model"),
             "effort": role_cfg.get("effort"),
             "llm_source": role_cfg.get("source"),
@@ -318,6 +197,7 @@ def _run_process(task, role, files, timeout_seconds):
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = os.environ.copy()
         env["AGENT_SUBAGENT_DEPTH"] = "1"
+        env["AGENT_SUBAGENT_ROLE"] = role
         command = [
             sys.executable,
             "-u",
@@ -367,7 +247,6 @@ def _run_process(task, role, files, timeout_seconds):
                         return _summary_result(
                             success=False,
                             role=role,
-                            mode="process",
                             status="timed_out",
                             summary="",
                             run_id=run_id,
@@ -380,7 +259,6 @@ def _run_process(task, role, files, timeout_seconds):
             return _summary_result(
                 success=False,
                 role=role,
-                mode="process",
                 status="failed",
                 summary="",
                 run_id=run_id,
@@ -394,7 +272,6 @@ def _run_process(task, role, files, timeout_seconds):
             return _summary_result(
                 success=False,
                 role=role,
-                mode="process",
                 status="failed",
                 summary="",
                 run_id=run_id,
@@ -409,7 +286,6 @@ def _run_process(task, role, files, timeout_seconds):
         return _summary_result(
             success=success,
             role=role,
-            mode="process",
             status=child_result.get("status"),
             summary=summary,
             artifacts=_artifacts_from_result(child_result),
@@ -423,45 +299,30 @@ def _run_process(task, role, files, timeout_seconds):
         )
 
 
-SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 1200
-
-
-def run_subagent(task, role="explore", mode="process", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS, session_id=None):
+def run_subagent(task, role="review", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS, **kwargs):
     task = str(task or "").strip()
-    role = str(role or "explore").strip().lower()
-    mode = str(mode or "process").strip().lower()
+    try:
+        role = normalize_subagent_role(role)
+    except ValueError as exc:
+        return _summary_result(
+            success=False,
+            role=str(role or "review"),
+            status="rejected",
+            summary="",
+            error=str(exc),
+        )
     if not task:
         return _summary_result(
             success=False,
             role=role,
-            mode=mode,
             status="rejected",
             summary="",
             error="subagent task is required",
-        )
-    if role not in ROLE_CONFIGS:
-        return _summary_result(
-            success=False,
-            role=role,
-            mode=mode,
-            status="rejected",
-            summary="",
-            error=f"unsupported subagent role: {role}",
-        )
-    if mode not in {"process", "readonly"}:
-        return _summary_result(
-            success=False,
-            role=role,
-            mode=mode,
-            status="rejected",
-            summary="",
-            error=f"unsupported subagent mode: {mode}",
         )
     if _subagent_depth() >= 1:
         return _summary_result(
             success=False,
             role=role,
-            mode=mode,
             status="rejected",
             summary="",
             error="nested subagent delegation is disabled",
@@ -471,13 +332,11 @@ def run_subagent(task, role="explore", mode="process", files=None, timeout_secon
     except Exception:
         timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
     files = files if isinstance(files, list) else []
-    if mode == "readonly":
-        return _run_readonly(task, role, files, timeout_seconds, session_id=session_id)
     return _run_process(task, role, files, timeout_seconds)
 
 
-def run_readonly_subagents_parallel(specs):
-    """Run readonly subagents concurrently without SIGALRM; preserve spec order."""
+def run_review_subagents_parallel(specs):
+    """Run review subagents concurrently as isolated process workers."""
     items = list(specs or [])
     if not items:
         return []
@@ -488,14 +347,12 @@ def run_readonly_subagents_parallel(specs):
         spec = spec if isinstance(spec, dict) else {}
         return run_subagent(
             task=spec.get("task"),
-            role=spec.get("role", "explore"),
-            mode="readonly",
+            role="review",
             files=spec.get("files", []),
             timeout_seconds=spec.get("timeout_seconds", SUBAGENT_DEFAULT_TIMEOUT_SECONDS),
         )
 
     def run_one_in_context(spec):
-        # A Context object can only be entered once; give each worker its own copy.
         return parent_ctx.copy().run(run_one, spec)
 
     if len(items) == 1:
@@ -510,16 +367,14 @@ def run_readonly_subagents_parallel(specs):
                 timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or SUBAGENT_DEFAULT_TIMEOUT_SECONDS), 3600))
             except Exception:
                 timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
-            role = str((spec or {}).get("role") or "explore").strip().lower()
             try:
                 results[index] = future.result(timeout=timeout_seconds + 5)
             except Exception as exc:
                 results[index] = _summary_result(
                     success=False,
-                    role=role,
-                    mode="readonly",
+                    role="review",
                     status="failed",
                     summary="",
-                    error=f"read-only subagent failed: {exc}",
+                    error=f"review subagent failed: {exc}",
                 )
     return results

@@ -299,19 +299,16 @@ def validate_call(call, index):
 
     elif url == "/subagent":
         _require_str(payload, "task", index, url)
-        role = str(payload.get("role") or "explore").strip().lower()
-        if role not in {"explore", "review", "implement"}:
+        role = str(payload.get("role") or "review").strip().lower()
+        if role == "explore":
+            role = "review"
+        if role not in {"review", "implement"}:
             raise ValueError(
-                f"call {index} /subagent payload.role must be explore, review, or implement"
+                f"call {index} /subagent payload.role must be review or implement"
             )
-        mode = str(payload.get("mode") or "process").strip().lower()
-        if mode not in {"process", "readonly"}:
+        if "mode" in payload:
             raise ValueError(
-                f"call {index} /subagent payload.mode must be process or readonly"
-            )
-        if mode == "readonly" and role == "implement":
-            raise ValueError(
-                f"call {index} /subagent implement role requires process mode"
+                f"call {index} /subagent payload.mode is no longer supported; use role only"
             )
         files = payload.get("files", [])
         if files is None:
@@ -330,7 +327,6 @@ def validate_call(call, index):
         payload.update(
             {
                 "role": role,
-                "mode": mode,
                 "files": files,
                 "timeout_seconds": max(1, min(int(timeout_seconds), 3600)),
             }

@@ -138,10 +138,8 @@ def _llm_output_changed(path, pre_content, post_content, batch_id=None, progress
     result = run_subagent(
         task,
         role="review",
-        mode="readonly",
         files=[path],
         timeout_seconds=1200,
-        session_id=universal_session("dependency_io_review"),
     )
     summary = str((result or {}).get("summary") or "").strip()
     first = summary.splitlines()[0].strip().upper() if summary else ""
