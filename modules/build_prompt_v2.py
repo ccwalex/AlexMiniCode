@@ -262,7 +262,7 @@ def build_prompt_v2(
 5. /subagent
 
 Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
-
+If task is expected to modify less than 3 files, prefer to do the work yourself instead of delegating.
 Strongly prefer /subagent over reading many files in the parent turn.
 When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing review /subagent calls instead of a long /read batch.
 All review /subagent calls in one trailing batch run in parallel; implement subagents run sequentially.
