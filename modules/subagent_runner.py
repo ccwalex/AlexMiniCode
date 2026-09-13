@@ -392,7 +392,10 @@ def _run_process(task, role, files, timeout_seconds):
         )
 
 
-def run_subagent(task, role="explore", mode="process", files=None, timeout_seconds=600):
+SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 1200
+
+
+def run_subagent(task, role="explore", mode="process", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS):
     task = str(task or "").strip()
     role = str(role or "explore").strip().lower()
     mode = str(mode or "process").strip().lower()
@@ -435,7 +438,7 @@ def run_subagent(task, role="explore", mode="process", files=None, timeout_secon
     try:
         timeout_seconds = max(1, min(int(timeout_seconds), 3600))
     except Exception:
-        timeout_seconds = 600
+        timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
     files = files if isinstance(files, list) else []
     if mode == "readonly":
         return _run_readonly(task, role, files, timeout_seconds)
@@ -457,7 +460,7 @@ def run_readonly_subagents_parallel(specs):
             role=spec.get("role", "explore"),
             mode="readonly",
             files=spec.get("files", []),
-            timeout_seconds=spec.get("timeout_seconds", 600),
+            timeout_seconds=spec.get("timeout_seconds", SUBAGENT_DEFAULT_TIMEOUT_SECONDS),
         )
 
     if len(items) == 1:
@@ -469,9 +472,9 @@ def run_readonly_subagents_parallel(specs):
         futures = [pool.submit(ctx.run, run_one, spec) for spec in items]
         for index, (spec, future) in enumerate(zip(items, futures)):
             try:
-                timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or 600), 3600))
+                timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or SUBAGENT_DEFAULT_TIMEOUT_SECONDS), 3600))
             except Exception:
-                timeout_seconds = 600
+                timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
             role = str((spec or {}).get("role") or "explore").strip().lower()
             try:
                 results[index] = future.result(timeout=timeout_seconds + 5)

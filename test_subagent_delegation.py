@@ -39,7 +39,7 @@ class SubagentDelegationTests(unittest.TestCase):
         )
         self.assertTrue(parsed["success"], parsed)
         payload = parsed["calls"][0]["payload"]
-        self.assertEqual(payload["timeout_seconds"], 600)
+        self.assertEqual(payload["timeout_seconds"], 1200)
         self.assertEqual(payload["files"], ["agent/modules/parse_api_plan.py"])
 
     def test_parser_rejects_nonfinal_or_mutating_readonly_subagent(self):

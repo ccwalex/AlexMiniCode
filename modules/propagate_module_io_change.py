@@ -52,7 +52,7 @@ def _llm_output_changed(path, pre_content, post_content):
         f"<before>\n{(pre_content or '')[:12000]}\n</before>\n"
         f"<after>\n{(post_content or '')[:12000]}\n</after>"
     )
-    result = run_subagent(task, role="review", mode="readonly", files=[path], timeout_seconds=180)
+    result = run_subagent(task, role="review", mode="readonly", files=[path], timeout_seconds=1200)
     summary = str((result or {}).get("summary") or "").strip()
     first = summary.splitlines()[0].strip().upper() if summary else ""
     changed = first.startswith("YES")
@@ -80,7 +80,7 @@ def _update_dependent(changed_path, dependent, before_contract, after_contract, 
         role="implement",
         mode="process",
         files=[dependent, changed_path],
-        timeout_seconds=600,
+        timeout_seconds=1200,
     )
 
 

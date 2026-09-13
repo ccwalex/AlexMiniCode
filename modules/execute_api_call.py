@@ -669,7 +669,7 @@ def execute_api_call(
                 role=role,
                 mode=mode,
                 files=payload.get("files", []),
-                timeout_seconds=payload.get("timeout_seconds", 600),
+                timeout_seconds=payload.get("timeout_seconds", 1200),
             )
             print(
                 f"[Subagent] done mode={mode} role={role} "

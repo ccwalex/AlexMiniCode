@@ -322,7 +322,7 @@ def validate_call(call, index):
             raise ValueError(
                 f"call {index} /subagent payload.files must be a list of non-empty strings"
             )
-        timeout_seconds = payload.get("timeout_seconds", 600)
+        timeout_seconds = payload.get("timeout_seconds", 1200)
         if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
             raise ValueError(
                 f"call {index} /subagent payload.timeout_seconds must be numeric"

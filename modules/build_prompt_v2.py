@@ -64,21 +64,33 @@ def build_prompt_v2(
 
 Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
 
+Strongly prefer /subagent over reading many files in the parent turn.
+When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing readonly /subagent calls instead of a long /read batch.
+Multiple readonly /subagent calls in one trailing batch run in parallel.
+
+Good uses:
+- explore: locate where behavior lives across many modules and return a concise map
+- review: read several related files and return root cause, call graph, or verdict
+- implement: isolated edits in process mode when a bounded subtask is clear
+
 Payload:
 {
   "task": "specific task and expected deliverable",
   "role": "explore|review|implement",
   "mode": "process|readonly",
   "files": ["optional/project-relative/path.py"],
-  "timeout_seconds": 600
+  "timeout_seconds": 1200
 }
 
 Rules:
+- Prefer readonly explore/review subagents before parent /read when many files must be surveyed.
+- Emit 2-8 focused readonly /subagent calls in one trailing batch when work spans multiple areas.
+- Give each subagent a concrete deliverable: findings, affected paths, root cause, or patch plan.
 - You may emit multiple /subagent calls in one planner turn as a trailing batch.
 - /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
 - Use process mode for implementation or work requiring tools.
-- Use readonly mode only for fast explore/review tasks over the supplied files.
+- Use readonly mode for fast explore/review tasks over the supplied files.
 - The parent receives only a bounded summary, status, and changed artifact paths.
 - Subagent scratchpads, reads, logs, and planner traces are not added to parent context.
 """
@@ -98,6 +110,7 @@ Rules:
 - Do not wrap JSON in code fences.
 - Do not read unnecessary files if metadata / task already provides enough information
 - minimize iterations by request_feedback, read all necessary files at once instead of multiple iterations
+- for broad exploration or review across many files, prefer trailing readonly /subagent calls over parent /read of every path
 - verification tests are not necessary unless explicitly prompted.
 </system>
 
@@ -139,6 +152,7 @@ Payload:
 Rules:
 - Use /read only when necessary file content is not already attached.
 - Do not read the same file repeatedly unless the file may have changed.
+- If many files must be reviewed before deciding, prefer trailing readonly /subagent explore or review calls instead of /read for every path.
 - If /read is used only so you can inspect before deciding, /request_feedback should usually be the final call.
 - If this turn already includes a trailing /subagent batch, those calls may follow /read in the same turn.
 
@@ -367,11 +381,19 @@ Rules:
 - Standing memory and previous problems are background only; explicit current task requirements take priority.
 </context_handling_rules>
 
+<delegation_rules>
+- Subagents are the preferred way to inspect or review many files without bloating parent context.
+- When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to readonly explore/review subagents first.
+- Keep parent turns for synthesis, edits, validation, and decisions; push file-heavy reading into subagents.
+- After subagent summaries return, /read only the few files you must edit directly.
+</delegation_rules>
+
 <task_completion_rules>
 - The plan must satisfy all explicit parts of the current task.
 - Do not stop after only partial completion.
 - If the task asks to create/write/modify and run/validate, include both file mutation and /shell validation.
 - If information is needed before deciding, inspect first and use /request_feedback.
+- For multi-file investigation, prefer trailing readonly /subagent calls over reading every file in the parent turn.
 - For simple direct creation tasks, do not inspect directories first unless necessary.
 - If build/test validation fails, do not hide failure with || true.
 </task_completion_rules>
