@@ -11,6 +11,19 @@ MODULE_METADATA = {
             "outputs": "same read_cache dict with every path re-read from disk; unreadable paths removed"
         },
         {
+            "name": "drop_read_cache",
+            "inputs": {
+                "read_cache": "dict mapping project-relative paths to cached file content",
+                "paths": "list[str] project-relative paths to remove from the cache"
+            },
+            "outputs": "dict with dropped paths, missing paths, and remaining cache size"
+        },
+        {
+            "name": "get_drop_cache_endpoint_doc",
+            "inputs": {"loop": "str main or debug"},
+            "outputs": "str endpoint documentation block for planner prompts"
+        },
+        {
             "name": "render_file_context",
             "inputs": {
                 "read_cache": "dict mapping project-relative file paths to file content",
@@ -42,6 +55,57 @@ def refresh_read_cache(read_cache):
             read_cache.pop(path, None)
 
     return read_cache
+
+
+def drop_read_cache(read_cache, paths):
+    """Remove specific paths from read_cache so they stop appearing in file_context."""
+    if read_cache is None:
+        read_cache = {}
+
+    dropped = []
+    missing = []
+    seen = set()
+
+    for raw_path in paths or []:
+        path = str(raw_path or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if path in read_cache:
+            read_cache.pop(path, None)
+            dropped.append(path)
+        else:
+            missing.append(path)
+
+    return {
+        "dropped": dropped,
+        "missing": missing,
+        "remaining": len(read_cache),
+    }
+
+
+def get_drop_cache_endpoint_doc(loop: str = "main") -> str:
+    loop = str(loop or "main").strip().lower()
+    index = 9 if loop == "debug" else 10
+    return f"""
+{index}. /drop_cache
+
+Remove specific files from <file_context> when they are no longer needed for later turns.
+
+Payload:
+{{
+  "paths": ["relative/path.py", "other/path.ts"]
+}}
+
+Rules:
+- Drop files that are large, already inspected, and not needed for remaining work.
+- If you still need findings later, copy them to /scratchpad first.
+- Do not drop a file you still need to /edit or inspect this turn unless a later /write or /read will restore it.
+- Dropped files disappear from <file_context> on the next planner turn.
+- Dropped files can be re-read later with /read.
+- Does not delete files on disk; it only removes cached prompt context.
+- Does not trigger /request_feedback by itself.
+""".strip()
 
 
 def _ordered_paths(read_cache, path_order=None):
@@ -140,5 +204,19 @@ if __name__ == "__main__":
     stale_cache = {stale_path: "stale content"}
     refresh_read_cache(stale_cache)
     assert stale_cache[stale_path] == disk_content
+
+    drop_cache = {
+        "code/a.py": "a",
+        "code/b.py": "b",
+        "code/c.py": "c",
+    }
+    drop_result = drop_read_cache(drop_cache, ["code/b.py", "code/missing.py", "code/b.py"])
+    assert drop_result["dropped"] == ["code/b.py"]
+    assert drop_result["missing"] == ["code/missing.py"]
+    assert drop_result["remaining"] == 2
+    assert "code/b.py" not in drop_cache
+    assert "/drop_cache" in get_drop_cache_endpoint_doc()
+    assert "10. /drop_cache" in get_drop_cache_endpoint_doc("main")
+    assert "9. /drop_cache" in get_drop_cache_endpoint_doc("debug")
 
     print("RENDER_FILE_CONTEXT SELF TEST PASSED")

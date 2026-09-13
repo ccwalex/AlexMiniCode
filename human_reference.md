@@ -70,6 +70,8 @@ endpoint table injected to prompt
 | run shell | /shell | {"cmd": str} |
 | delegate task | /subagent | {"task": str, "role": "explore\|review\|implement", "mode": "process\|readonly", "files": list[str], "timeout_seconds": int} |
 | request feedback | /request_feedback | {} |
+| scratchpad notes | /scratchpad | {"action": "read\|set\|append\|clear", "content": str} |
+| drop cached files | /drop_cache | {"paths": list[str]} |
 | finish | /done | {"summary": str} |
 
 `/subagent` calls must form a trailing batch in a planner turn (optional

@@ -2,6 +2,7 @@ import os
 
 from read_file import read_file
 from scratchpad import get_scratchpad_endpoint_doc, render_scratchpad_block
+from render_file_context import get_drop_cache_endpoint_doc
 from conflict import get_conflict_endpoint_doc
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
 
@@ -252,7 +253,9 @@ Payload:
 
 {get_scratchpad_endpoint_doc("main")}
 
-{get_conflict_endpoint_doc()}
+{get_drop_cache_endpoint_doc("main")}
+
+{get_conflict_endpoint_doc("main")}
 </endpoints>
 
 <codebase_rules>
@@ -342,6 +345,9 @@ Where file contents appear:
 - After /read then /request_feedback, updated file contents appear here on the next turn.
 - Before calling /read, always search <file_context> for the path.
 - If a file's full current content is already here, do NOT call /read for that path.
+- Use /drop_cache to remove files no longer needed and shrink prompt context.
+- Copy important findings to /scratchpad before dropping large files.
+- Dropped files can be re-read later with /read if needed again.
 </file_context_rules>
 
 <tool_feedback_rules>
@@ -438,8 +444,14 @@ if __name__ == "__main__":
     )
 
     # Assert system prompt requirements
-    for term in ["/read", "/write", "/edit", "/shell", "/request_feedback", "/scratchpad", "/done", "/conflict", "def edit(code)", "Return ONLY valid JSON"]:
+    for term in ["/read", "/write", "/edit", "/shell", "/request_feedback", "/scratchpad", "/drop_cache", "/done", "/conflict", "def edit(code)", "Return ONLY valid JSON"]:
         assert term in sp, f"Missing '{term}' in system prompt"
+
+    assert "10. /drop_cache" in sp
+    assert "9. /scratchpad" in sp
+    assert "11. /conflict" in sp
+    assert "9. /drop_cache" not in sp
+    assert "9. /conflict" not in sp
 
     assert "<background_context>" not in sp
     assert "compact background" not in sp

@@ -10,6 +10,7 @@ from request_feedback import request_feedback
 import traceback
 from repair_write_step import repair_write_step
 from scratchpad import execute_scratchpad
+from render_file_context import drop_read_cache
 from conflict import execute_conflict
 from subagent_runner import run_subagent
 from propagate_module_io_change import propagate_module_io_change, snapshot_pre_content
@@ -167,6 +168,16 @@ def _record_scratchpad(run_state, action, success, content_preview="", error="")
             success,
             content_preview=content_preview,
             error=error,
+        )
+
+
+def _record_cache_drop(run_state, dropped, missing, remaining):
+    if run_state is not None and hasattr(run_state, "add_cache_drop"):
+        _safe_call(
+            run_state.add_cache_drop,
+            dropped,
+            missing,
+            remaining,
         )
 
 
@@ -631,6 +642,20 @@ def execute_api_call(
             result["output"] = sp_res
             return result
 
+        if url == "/drop_cache":
+            drop_res = drop_read_cache(read_cache, payload.get("paths"))
+
+            _record_cache_drop(
+                run_state,
+                drop_res.get("dropped") or [],
+                drop_res.get("missing") or [],
+                drop_res.get("remaining", len(read_cache)),
+            )
+
+            result["success"] = True
+            result["output"] = drop_res
+            return result
+
         if url == "/done":
             if mark_task_done:
                 _mark_completed(run_state, success=True)
@@ -780,6 +805,16 @@ if __name__ == "__main__":
         def mark_completed(self, success=False):
             self.completed = success
 
+        def add_cache_drop(self, dropped, missing=None, remaining=0):
+            self.cache_drops = getattr(self, "cache_drops", [])
+            self.cache_drops.append(
+                {
+                    "dropped": dropped,
+                    "missing": missing,
+                    "remaining": remaining,
+                }
+            )
+
     rs = FakeRunState()
     rc = {}
 
@@ -840,6 +875,20 @@ if __name__ == "__main__":
     )
     assert res["success"], res
     assert pad.read() == "note"
+
+    rc["drop.py"] = "old"
+    rc["keep.py"] = "stay"
+    res = execute_api_call(
+        {"url": "/drop_cache", "payload": {"paths": ["drop.py", "missing.py"]}},
+        rs,
+        rc,
+    )
+    assert res["success"], res
+    assert res["output"]["dropped"] == ["drop.py"]
+    assert res["output"]["missing"] == ["missing.py"]
+    assert "drop.py" not in rc
+    assert rc["keep.py"] == "stay"
+    assert not res["request_feedback"]
 
     res = execute_api_call(
         {"url": "/done", "payload": {}},

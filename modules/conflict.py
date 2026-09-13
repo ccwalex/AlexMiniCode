@@ -108,9 +108,11 @@ def execute_conflict(task: str, payload: dict | None) -> dict:
         }
 
 
-def get_conflict_endpoint_doc() -> str:
-    return """
-9. /conflict
+def get_conflict_endpoint_doc(loop: str = "main") -> str:
+    loop = str(loop or "main").strip().lower()
+    index = 10 if loop == "debug" else 11
+    return f"""
+{index}. /conflict
 
 Use /conflict when the task cannot proceed because of ambiguity, conflicting
 requirements, missing information that cannot be inferred, or an unresolvable
@@ -120,9 +122,9 @@ Calling /conflict terminates the current loop immediately and marks the task as
 failed. The conflict description is appended to agent_memory/decision.json.
 
 Payload:
-{
+{{
   "conflict": "describe ambiguity, conflicting requirements, or unresolvable errors"
-}
+}}
 
 Rules:
 - Use only when the task cannot be completed without external clarification or resolution.
@@ -163,6 +165,8 @@ if __name__ == "__main__":
     CFG.PROJECT_ROOT = original_root
     doc = get_conflict_endpoint_doc()
     assert "/conflict" in doc
+    assert "11. /conflict" in doc
+    assert "10. /conflict" in get_conflict_endpoint_doc("debug")
     assert "PLACEHOLDER" not in doc
     assert "decision.json" in doc
     print("CONFLICT SELF TEST PASSED")

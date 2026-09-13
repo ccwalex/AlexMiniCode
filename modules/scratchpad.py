@@ -227,8 +227,9 @@ Use it to preserve:
 The scratchpad is NOT persisted to disk and is cleared when the task ends.
 """.strip()
 
+    index = 8 if is_debug else 9
     return f"""
-8. /scratchpad
+{index}. /scratchpad
 
 {description}
 
@@ -261,5 +262,7 @@ if __name__ == "__main__":
     assert render_scratchpad_block("note", loop="main", iteration=1) == ""
     assert '<scratchpad loop="main">' in render_scratchpad_block("note", loop="main", iteration=2)
     assert "task-local RAM" in get_scratchpad_endpoint_doc("main")
+    assert "9. /scratchpad" in get_scratchpad_endpoint_doc("main")
     assert "debug scratchpad" in get_scratchpad_endpoint_doc("debug").lower()
+    assert "8. /scratchpad" in get_scratchpad_endpoint_doc("debug")
     print("SCRATCHPAD SELF TEST PASSED")

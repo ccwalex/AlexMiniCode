@@ -25,6 +25,7 @@ ALLOWED_URLS = {
     "/subagent",
     "/request_feedback",
     "/scratchpad",
+    "/drop_cache",
     "/write_llm_memory",
     "/done",
     "/conflict",
@@ -359,6 +360,18 @@ def validate_call(call, index):
                     f"call {index} /scratchpad payload.content must be a string"
                 )
 
+    elif url == "/drop_cache":
+        paths = payload.get("paths")
+        if paths is None:
+            paths = []
+        if not isinstance(paths, list) or not all(
+            isinstance(path, str) and path.strip() for path in paths
+        ):
+            raise ValueError(
+                f"call {index} /drop_cache payload.paths must be a list of non-empty strings"
+            )
+        payload["paths"] = [str(path).strip() for path in paths]
+
     elif url == "/write_llm_memory":
         _require_str(payload, "issue", index, url)
         _require_str(payload, "solution", index, url)
@@ -532,5 +545,26 @@ if __name__ == "__main__":
     ])
     assert result["success"], result
     assert result["calls"][0]["payload"]["summary"] == ""
+
+    result = parse_api_plan([
+        {
+            "url": "/drop_cache",
+            "payload": {
+                "paths": ["code/a.py", "code/b.py"]
+            }
+        }
+    ])
+    assert result["success"], result
+    assert result["calls"][0]["payload"]["paths"] == ["code/a.py", "code/b.py"]
+
+    result = parse_api_plan([
+        {
+            "url": "/drop_cache",
+            "payload": {
+                "paths": [""]
+            }
+        }
+    ])
+    assert not result["success"], result
 
     print("PARSE_API_PLAN SELF TEST PASSED")

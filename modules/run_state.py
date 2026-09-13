@@ -32,6 +32,7 @@ class RunState:
         self.edits = []
         self.shells = []
         self.scratchpads = []
+        self.cache_drops = []
         self.verifier_decisions = []
         self.metadata_refreshes = []
         self.errors = []
@@ -104,6 +105,16 @@ class RunState:
         self.scratchpads.append(record)
         return record
 
+    def add_cache_drop(self, dropped, missing=None, remaining=0):
+        record = {
+            "timestamp": time.time(),
+            "dropped": list(dropped or []),
+            "missing": list(missing or []),
+            "remaining": remaining,
+        }
+        self.cache_drops.append(record)
+        return record
+
     def add_verifier_decision(self, kind, target, approved, reason=""):
         record = {
             "timestamp": time.time(),
@@ -153,6 +164,7 @@ class RunState:
             "edits": self.edits,
             "shells": self.shells,
             "scratchpads": self.scratchpads,
+            "cache_drops": self.cache_drops,
             "verifier_decisions": self.verifier_decisions,
             "metadata_refreshes": self.metadata_refreshes,
             "errors": self.errors,

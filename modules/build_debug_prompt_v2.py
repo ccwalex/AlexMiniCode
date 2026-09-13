@@ -26,6 +26,7 @@ import json
 from read_file import read_file
 from build_feedback_context import build_shell_feedback_context
 from scratchpad import get_scratchpad_endpoint_doc, render_scratchpad_block
+from render_file_context import get_drop_cache_endpoint_doc
 from conflict import get_conflict_endpoint_doc
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
 
@@ -372,7 +373,9 @@ Payload:
 }}
 
 {get_scratchpad_endpoint_doc("debug")}
-{get_conflict_endpoint_doc()}
+
+{get_drop_cache_endpoint_doc("debug")}
+{get_conflict_endpoint_doc("debug")}
 </available_endpoints>
 
 <codebase_rules>
@@ -408,6 +411,9 @@ Where file contents appear in this debug prompt:
 - This block merges job-start attachments with all later /read, /write, and /edit results.
 - After /read then /request_feedback, updated file contents appear here on the next debug turn.
 - Before planning /read, search <file_context> for the path.
+- Use /drop_cache to remove files no longer needed and shrink prompt context.
+- Copy important findings to /scratchpad before dropping large files.
+- Dropped files can be re-read later with /read if needed again.
 </file_context_rules>
 
 <tool_feedback_rules>
@@ -616,5 +622,9 @@ if __name__ == "__main__":
     assert '"folder_path":"code/modules"' in user
     assert "<read_cache_context>" not in user
     assert user.index("<module_registry>") < user.index("<file_context>")
+    assert "9. /drop_cache" in system
+    assert "8. /scratchpad" in system
+    assert "10. /conflict" in system
+    assert "11. /conflict" not in system
 
     print("BUILD_DEBUG_PROMPT_V2 SELF TEST PASSED")
