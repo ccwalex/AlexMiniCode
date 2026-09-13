@@ -273,6 +273,15 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("5. /subagent", parent_prompt)
         self.assertNotIn("5. /subagent", child_prompt)
 
+    def test_parent_prompt_describes_subagent_context_isolation(self):
+        with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "0"}):
+            parent_prompt, _ = prompt_module.build_prompt_v2("task")
+        self.assertIn("What each subagent receives", parent_prompt)
+        self.assertIn("What subagents do NOT receive", parent_prompt)
+        self.assertIn("readonly mode", parent_prompt)
+        self.assertIn("process mode", parent_prompt)
+        self.assertIn("Subagents are context-isolated", parent_prompt)
+
     def test_per_job_role_overrides_apply_to_subagent_roles(self):
         with role_override_scope(
             {

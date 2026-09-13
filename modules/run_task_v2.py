@@ -45,6 +45,7 @@ from build_feedback_context import (
     format_completed_batch_note,
     merge_execution_turn_feedback,
 )
+from job_restart import persist_rewritten_task_from_env
 from plugins.background_context_plugin import rewrite_task
 from scratchpad import Scratchpad
 from run_state import RunState
@@ -202,6 +203,7 @@ def run_task_v2(
     max_feedback_loops=None,
     max_retries=None,
     role_overrides=None,
+    skip_task_rewrite=False,
 ):
     with role_override_scope(role_overrides):
         return _run_task_v2(
@@ -215,6 +217,7 @@ def run_task_v2(
             max_iterations=max_iterations,
             max_feedback_loops=max_feedback_loops,
             max_retries=max_retries,
+            skip_task_rewrite=skip_task_rewrite,
         )
 
 
@@ -229,6 +232,7 @@ def _run_task_v2(
     max_iterations=None,
     max_feedback_loops=None,
     max_retries=None,
+    skip_task_rewrite=False,
 ):
     planner_cfg = get_role_config("main_planner")
 
@@ -297,35 +301,42 @@ def _run_task_v2(
     module_registry_block = extract_module_registry_block(task)
     task_for_rewrite = task_without_attached_context(task) or task
 
-    try:
-        rewrite_result = rewrite_task(
-            task=task_for_rewrite,
-        )
+    if skip_task_rewrite:
+        task = task_for_rewrite
+        print("\n[Rewritten Task]")
+        print("(reused from previous job run; task rewrite skipped)")
+        print(task[:4000] if task else "(empty)")
+    else:
+        try:
+            rewrite_result = rewrite_task(
+                task=task_for_rewrite,
+            )
 
-        if isinstance(rewrite_result, dict) and rewrite_result.get("success"):
-            rewritten = str(rewrite_result.get("rewritten_task") or "").strip()
-            if rewritten:
-                task = rewritten
-            print("\n[Rewritten Task]")
-            print(task[:4000] if task else "(empty)")
-            if rewrite_result.get("skipped"):
-                print("(task rewrite skipped; using original task)")
-        else:
-            reason = rewrite_result.get("error", "task rewrite failed") if isinstance(rewrite_result, dict) else "task rewrite failed"
+            if isinstance(rewrite_result, dict) and rewrite_result.get("success"):
+                rewritten = str(rewrite_result.get("rewritten_task") or "").strip()
+                if rewritten:
+                    task = rewritten
+                print("\n[Rewritten Task]")
+                print(task[:4000] if task else "(empty)")
+                if rewrite_result.get("skipped"):
+                    print("(task rewrite skipped; using original task)")
+            else:
+                reason = rewrite_result.get("error", "task rewrite failed") if isinstance(rewrite_result, dict) else "task rewrite failed"
+                print(f"\n[Task Rewrite Warning] {reason}")
+                print("(continuing with original task text, without duplicated attached context)")
+                task = task_for_rewrite
+                _add_error(run_state, "task_rewrite_plugin", reason, context=rewrite_result)
+        except Exception as e:
+            reason = f"task rewrite plugin failed: {e}"
             print(f"\n[Task Rewrite Warning] {reason}")
             print("(continuing with original task text, without duplicated attached context)")
             task = task_for_rewrite
-            _add_error(run_state, "task_rewrite_plugin", reason, context=rewrite_result)
-    except Exception as e:
-        reason = f"task rewrite plugin failed: {e}"
-        print(f"\n[Task Rewrite Warning] {reason}")
-        print("(continuing with original task text, without duplicated attached context)")
-        task = task_for_rewrite
-        _add_error(run_state, "task_rewrite_plugin", reason)
+            _add_error(run_state, "task_rewrite_plugin", reason)
 
     # Keep original task available for diagnostics without changing planner input.
     run_state.original_task = original_task
     run_state.rewritten_task = task
+    persist_rewritten_task_from_env(task)
 
     iteration = 0
     feedback_loops = 0

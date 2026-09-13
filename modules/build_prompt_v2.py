@@ -68,31 +68,60 @@ Strongly prefer /subagent over reading many files in the parent turn.
 When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing readonly /subagent calls instead of a long /read batch.
 Multiple readonly /subagent calls in one trailing batch run in parallel.
 
+What each subagent receives (tailor dispatch to this):
+- task: your delegated brief, wrapped as <delegated_task>. This is the only parent-authored narrative the subagent sees.
+- files: up to 20 project-relative paths read fresh from disk and attached as <file_context>.
+- role: explore, review, or implement — selects a model profile tuned for that job type.
+- mode: readonly or process — controls capabilities (below).
+
+What subagents do NOT receive:
+- Parent read_cache, scratchpad, shell output, execution_notes, or prior planner turns.
+- Any context not explicitly placed in task or files.
+
+What the parent gets back:
+- A bounded summary (about 4000 chars), success/status, and artifact paths changed by process-mode subagents.
+- Subagent internal reads, logs, scratchpads, and planner traces are discarded.
+
+readonly mode (explore/review only; implement is rejected):
+- One fast LLM analysis call over task + supplied file_context only.
+- Cannot /read more files, /shell, /write, /edit, or delegate further.
+- Best for: code review, tracing call flow, comparing modules, returning a concise map/verdict.
+- Put every file the subagent must inspect in files. Put goals, hypotheses, constraints, and deliverable format in task.
+
+process mode (all roles; use for implement):
+- A fresh isolated planner subprocess with /read, /write, /edit, /shell (but no nested /subagent).
+- Starts with task + files only; may /read additional paths itself.
+- Ends with /done; parent receives the /done summary and successful write/edit paths.
+- Best for: bounded implementation, validation runs, multi-step investigation needing tools.
+- Still self-contained: paste critical shell excerpts or decision context into task; attach likely starting files in files.
+
 Good uses:
-- explore: locate where behavior lives across many modules and return a concise map
-- review: read several related files and return root cause, call graph, or verdict
-- implement: isolated edits in process mode when a bounded subtask is clear
+- explore readonly: locate where behavior lives; return affected paths and call graph
+- review readonly: compare several related files; return root cause or verdict
+- implement process: one bounded patch with its own validation
 
 Payload:
 {
-  "task": "specific task and expected deliverable",
+  "task": "self-contained brief: goal, constraints, hypotheses, expected deliverable",
   "role": "explore|review|implement",
   "mode": "process|readonly",
-  "files": ["optional/project-relative/path.py"],
+  "files": ["paths/the/subagent/needs.py"],
   "timeout_seconds": 1200
 }
 
-Rules:
-- Prefer readonly explore/review subagents before parent /read when many files must be surveyed.
+Tailoring rules:
+- Write task as if for a colleague with no prior chat history.
+- Include an explicit deliverable: bullet findings, path list, root cause, patch plan, or verdict.
+- For readonly, list all files to analyze in files — the subagent cannot fetch more.
+- For process, attach starting files in files but allow the subagent to /read neighbors as needed.
+- Paste short critical facts from parent /shell or prior findings into task; do not assume the subagent saw them.
+- Split parallel readonly batches by area (e.g. backend vs frontend), not duplicate overlapping file sets.
+- Prefer readonly explore/review before parent /read when many files must be surveyed.
+
+Batch rules:
 - Emit 2-8 focused readonly /subagent calls in one trailing batch when work spans multiple areas.
-- Give each subagent a concrete deliverable: findings, affected paths, root cause, or patch plan.
-- You may emit multiple /subagent calls in one planner turn as a trailing batch.
 - /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
-- Use process mode for implementation or work requiring tools.
-- Use readonly mode for fast explore/review tasks over the supplied files.
-- The parent receives only a bounded summary, status, and changed artifact paths.
-- Subagent scratchpads, reads, logs, and planner traces are not added to parent context.
 """
 
     system_prompt = f"""
@@ -386,6 +415,8 @@ Rules:
 - When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to readonly explore/review subagents first.
 - Keep parent turns for synthesis, edits, validation, and decisions; push file-heavy reading into subagents.
 - After subagent summaries return, /read only the few files you must edit directly.
+- Subagents are context-isolated: put needed file paths in files and needed facts/constraints/deliverables in task.
+- For readonly subagents, files is the complete file set; for process subagents, files is the starting context.
 </delegation_rules>
 
 <task_completion_rules>

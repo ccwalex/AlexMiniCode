@@ -559,6 +559,15 @@ def stop_all_jobs():
         "cleared_queue": queued,
         "queue_count": len(queued),
     }
+def restart_config_from_job(job_dir, config):
+    ensure_module_path()
+    from modules.job_restart import build_restart_config
+
+    return build_restart_config(
+        config,
+        job_dir,
+        final_task_builder=final_task,
+    )
 def restart_job(data):
     ensure_storage()
 
@@ -581,6 +590,7 @@ def restart_job(data):
     if cur.get("job_id") == jid:
         stop_current_job()
 
+    config = restart_config_from_job(d, config)
     new_jid = create_job(config)
     started = start_next()
 
@@ -589,6 +599,7 @@ def restart_job(data):
         "old_job_id": jid,
         "new_job_id": new_jid,
         "started": started,
+        "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
     }
 def restart_current_job():
     ensure_storage()
@@ -611,6 +622,7 @@ def restart_current_job():
 
     stop_result = stop_current_job()
 
+    config = restart_config_from_job(d, config)
     new_jid = create_job(config)
     started = start_next()
 
@@ -620,6 +632,7 @@ def restart_current_job():
         "old_job_id": jid,
         "new_job_id": new_jid,
         "started": started,
+        "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
     }
 def normalize_submission(data):
     if not isinstance(data,dict): data={}

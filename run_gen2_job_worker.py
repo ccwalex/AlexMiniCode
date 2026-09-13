@@ -174,6 +174,7 @@ def run_job(job_dir):
                 max_feedback_loops=config.get("max_feedback_loops"),
                 max_retries=config.get("max_retries"),
                 role_overrides=config.get("role_overrides"),
+                skip_task_rewrite=bool(config.get("skip_task_rewrite")),
             )
 
             safe_result = make_json_safe(result)
