@@ -1,5 +1,10 @@
 from build_debug_prompt_v2 import build_debug_prompt_v2
-from build_feedback_context import build_shell_feedback_context
+from build_feedback_context import (
+    append_bounded,
+    build_shell_feedback_context,
+    format_completed_batch_note,
+    merge_execution_turn_feedback,
+)
 from render_file_context import render_file_context
 from call_llm import call_llm_role
 from parse_api_plan import parse_api_plan
@@ -112,6 +117,29 @@ def _print_debug_plan(plan):
 
     for index, call in enumerate(plan):
         print(f"  {index}: {_brief_call(call)}")
+
+
+def _append_debug_turn_feedback(outputs_str, exec_res, run_state, plan=None, *, completed=False):
+    outputs_str, _ = merge_execution_turn_feedback(
+        exec_res,
+        run_state=run_state,
+        shell_context=outputs_str,
+        execution_notes=outputs_str,
+    )
+    if completed and plan:
+        outputs_str = append_bounded(
+            outputs_str,
+            format_completed_batch_note(
+                plan,
+                tag="completed_debug_batch",
+                guidance=(
+                    "The previous debug API batch executed successfully but did not call /done. "
+                    "Do not repeat these successful calls. Continue repair and use /done only "
+                    "after the failed step has been revalidated."
+                ),
+            ),
+        )
+    return outputs_str
 
 
 def _print_debug_execution(status, exec_res, results):
@@ -310,6 +338,11 @@ def execute_debug_v2(
         _print_debug_execution(status, exec_res, results)
 
         if status == "request_feedback":
+            outputs_str = _append_debug_turn_feedback(
+                outputs_str,
+                exec_res,
+                run_state,
+            )
             print("[Debug Loop] request_feedback received; continuing to next debug iteration")
             continue
         elif status == "done":
@@ -332,6 +365,13 @@ def execute_debug_v2(
                 "shell_feedback": shell_feedback,
             }
         elif status == "completed":
+            outputs_str = _append_debug_turn_feedback(
+                outputs_str,
+                exec_res,
+                run_state,
+                plan=plan,
+                completed=True,
+            )
             current_failed_call = None
             current_failed_result = {
                 "error": (

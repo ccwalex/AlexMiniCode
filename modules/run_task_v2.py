@@ -40,6 +40,11 @@ from extract_task_context import (
     task_without_attached_context,
 )
 from render_file_context import refresh_read_cache, render_file_context
+from build_feedback_context import (
+    append_bounded,
+    format_completed_batch_note,
+    merge_execution_turn_feedback,
+)
 from plugins.background_context_plugin import rewrite_task
 from scratchpad import Scratchpad
 from run_state import RunState
@@ -99,90 +104,7 @@ def _append_run_safe(task, output):
 
 
 def _append_bounded(current, addition, max_chars=60000):
-    addition = str(addition or "").strip()
-    if not addition:
-        return str(current or "")
-    combined = f"{str(current or '').strip()}\n\n{addition}".strip()
-    if len(combined) > max_chars:
-        combined = "[TRUNCATED]\n" + combined[-max_chars:]
-    return combined
-
-
-def _shell_feedback_from_execution_result(execution_result, run_state=None):
-    """
-    Extract shell-only feedback for tool_feedback_context.
-
-    File contents are not returned here; they are merged into file_context via read_cache.
-    """
-    blocks = []
-
-    results = execution_result.get("results") or []
-    for result in results:
-        if not isinstance(result, dict) or result.get("url") != "/shell":
-            continue
-
-        payload = result.get("payload") or {}
-        cmd = str(payload.get("cmd") or "").strip()
-        output = result.get("output")
-
-        if isinstance(output, dict):
-            text = (
-                output.get("output")
-                or output.get("stdout")
-                or output.get("stderr")
-                or ""
-            )
-        else:
-            text = output
-
-        text = str(text or "").strip()
-        if not text and not cmd:
-            continue
-
-        blocks.append(f'<shell cmd="{cmd}">')
-        blocks.append(text or "(no output)")
-        blocks.append("</shell>")
-
-    if blocks:
-        return "<shell_outputs>\n" + "\n".join(blocks) + "\n</shell_outputs>"
-
-    return ""
-
-
-def _subagent_feedback_from_execution_result(execution_result, max_chars=5000):
-    """Return only bounded subagent deliverables, never child trace/context."""
-    blocks = []
-    for result in execution_result.get("results") or []:
-        if not isinstance(result, dict) or result.get("url") != "/subagent":
-            continue
-        output = result.get("output")
-        subagent_result = output.get("subagent_result") if isinstance(output, dict) else None
-        if not isinstance(subagent_result, dict):
-            continue
-        safe_result = {
-            "success": bool(subagent_result.get("success")),
-            "status": str(subagent_result.get("status") or ""),
-            "role": str(subagent_result.get("role") or ""),
-            "mode": str(subagent_result.get("mode") or ""),
-            "summary": str(subagent_result.get("summary") or ""),
-            "artifacts": [
-                str(path)[:300] for path in list(subagent_result.get("artifacts") or [])[:20]
-            ],
-            "run_id": str(subagent_result.get("run_id") or ""),
-            "error": str(subagent_result.get("error") or "")[:1000],
-        }
-        encoded = json.dumps(safe_result, ensure_ascii=False)
-        if len(encoded) > max_chars:
-            overflow = len(encoded) - max_chars
-            keep = max(0, len(safe_result["summary"]) - overflow - 100)
-            safe_result["summary"] = safe_result["summary"][:keep] + "\n[TRUNCATED]"
-            encoded = json.dumps(safe_result, ensure_ascii=False)
-        if len(encoded) > max_chars:
-            safe_result["artifacts"] = []
-            safe_result["error"] = safe_result["error"][:200]
-            encoded = json.dumps(safe_result, ensure_ascii=False)
-        blocks.append(f"<subagent_result>{encoded}</subagent_result>")
-    return "\n".join(blocks)
+    return append_bounded(current, addition, max_chars=max_chars)
 
 
 def _done_summary(execution_result):
@@ -573,24 +495,16 @@ def _run_task_v2(
         outputs += "\n"
 
         if status == "request_feedback":
-            shell_feedback = _shell_feedback_from_execution_result(
+            shell_context, execution_notes = merge_execution_turn_feedback(
                 execution_result,
                 run_state=run_state,
+                shell_context=shell_context,
+                execution_notes=execution_notes,
             )
-            subagent_feedback = _subagent_feedback_from_execution_result(execution_result)
-
-            if shell_feedback.strip():
-                shell_context = _append_bounded(shell_context, shell_feedback)
-            if subagent_feedback.strip():
-                execution_notes = _append_bounded(execution_notes, subagent_feedback)
 
             feedback_loops += 1
             print("\n[Request Feedback Triggered]")
             print(f"[file_context paths] {list(read_cache.keys())}")
-            if shell_feedback.strip():
-                print(shell_feedback[:4000])
-            if subagent_feedback.strip():
-                print(subagent_feedback[:4000])
             continue
 
         if status == "done":
@@ -611,14 +525,15 @@ def _run_task_v2(
             }
 
         if status == "completed":
+            shell_context, execution_notes = merge_execution_turn_feedback(
+                execution_result,
+                run_state=run_state,
+                shell_context=shell_context,
+                execution_notes=execution_notes,
+            )
             execution_notes = _append_bounded(
                 execution_notes,
-                "<completed_batch>\n"
-                "The previous API batch executed successfully but did not call /done. "
-                "Do not repeat these successful calls. Continue the task and use /done only "
-                "when all requirements are complete.\n"
-                f"<successful_calls>{json.dumps(calls, ensure_ascii=False)}</successful_calls>\n"
-                "</completed_batch>",
+                format_completed_batch_note(calls),
             )
             print("\n[Main Loop] API batch completed without /done; requesting another planner turn")
             continue
@@ -835,16 +750,12 @@ def _run_task_v2(
                     outputs += "\n"
 
                     if resume_status == "request_feedback":
-                        shell_feedback = _shell_feedback_from_execution_result(
+                        shell_context, execution_notes = merge_execution_turn_feedback(
                             resume_result,
                             run_state=run_state,
+                            shell_context=shell_context,
+                            execution_notes=execution_notes,
                         )
-                        subagent_feedback = _subagent_feedback_from_execution_result(resume_result)
-
-                        if shell_feedback.strip():
-                            shell_context = _append_bounded(shell_context, shell_feedback)
-                        if subagent_feedback.strip():
-                            execution_notes = _append_bounded(execution_notes, subagent_feedback)
 
                         consumed = _calls_consumed_by_execution(
                             pending_resume_calls,
@@ -858,17 +769,9 @@ def _run_task_v2(
                                 f"\n[Main Loop] Request feedback during resume; "
                                 f"continuing {len(pending_resume_calls)} remaining step(s) without replanning"
                             )
-                            if shell_feedback.strip():
-                                print(shell_feedback[:4000])
-                            if subagent_feedback.strip():
-                                print(subagent_feedback[:4000])
                             continue
 
                         print("\n[Request Feedback Triggered After Debug Resume]")
-                        if shell_feedback.strip():
-                            print(shell_feedback[:4000])
-                        if subagent_feedback.strip():
-                            print(subagent_feedback[:4000])
                         break
 
                     if resume_status == "done":
@@ -889,14 +792,23 @@ def _run_task_v2(
                         }
 
                     if resume_status == "completed":
+                        shell_context, execution_notes = merge_execution_turn_feedback(
+                            resume_result,
+                            run_state=run_state,
+                            shell_context=shell_context,
+                            execution_notes=execution_notes,
+                        )
                         execution_notes = _append_bounded(
                             execution_notes,
-                            "<completed_resume_batch>\n"
-                            "All resumed calls executed, but no /done call was reached. "
-                            "Do not repeat these successful calls. Continue with a planner turn "
-                            "for explicit task completion.\n"
-                            f"<successful_calls>{json.dumps(pending_resume_calls, ensure_ascii=False)}</successful_calls>\n"
-                            "</completed_resume_batch>",
+                            format_completed_batch_note(
+                                pending_resume_calls,
+                                tag="completed_resume_batch",
+                                guidance=(
+                                    "All resumed calls executed, but no /done call was reached. "
+                                    "Do not repeat these successful calls. Continue with a planner turn "
+                                    "for explicit task completion."
+                                ),
+                            ),
                         )
                         print(
                             "\n[Main Loop] Resumed batch completed without /done; "

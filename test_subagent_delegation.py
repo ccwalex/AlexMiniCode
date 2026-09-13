@@ -19,7 +19,7 @@ import modules.run_task_v2 as task_module
 import modules.subagent_runner as runner
 from modules.model_config import get_role_config, role_override_scope
 from modules.parse_api_plan import parse_api_plan
-from modules.run_task_v2 import _subagent_feedback_from_execution_result
+from modules.build_feedback_context import subagent_feedback_from_execution_result
 
 
 class SubagentDelegationTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class SubagentDelegationTests(unittest.TestCase):
                 }
             ]
         }
-        feedback = _subagent_feedback_from_execution_result(execution, max_chars=1200)
+        feedback = subagent_feedback_from_execution_result(execution, max_chars=1200)
         self.assertIn("<subagent_result>", feedback)
         self.assertIn("[TRUNCATED]", feedback)
         self.assertNotIn("run_state", feedback)
@@ -491,7 +491,7 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(seen, ["/read", "/subagent"])
         self.assertEqual([item["url"] for item in result["results"]], ["/read", "/subagent"])
         parallel.assert_not_called()
-        feedback = _subagent_feedback_from_execution_result(result)
+        feedback = subagent_feedback_from_execution_result(result)
         self.assertIn("<subagent_result>", feedback)
         self.assertIn("reviewed", feedback)
 

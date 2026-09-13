@@ -1,3 +1,5 @@
+import json
+
 from generate_trace import generate_trace
 from infer_code_type import infer_code_type
 from build_block_table import build_block_table
@@ -62,6 +64,121 @@ def build_shell_feedback_context(run_state, max_chars=8000, start_index=0):
         "feedback": feedback_str,
         "error": None,
     }
+
+
+def append_bounded(current, addition, max_chars=60000):
+    addition = str(addition or "").strip()
+    if not addition:
+        return str(current or "")
+    combined = f"{str(current or '').strip()}\n\n{addition}".strip()
+    if len(combined) > max_chars:
+        combined = "[TRUNCATED]\n" + combined[-max_chars:]
+    return combined
+
+
+def shell_feedback_from_execution_result(execution_result, run_state=None):
+    """Extract shell-only feedback for tool_feedback_context."""
+    blocks = []
+    results = execution_result.get("results") or []
+    for result in results:
+        if not isinstance(result, dict) or result.get("url") != "/shell":
+            continue
+
+        payload = result.get("payload") or {}
+        cmd = str(payload.get("cmd") or "").strip()
+        output = result.get("output")
+
+        if isinstance(output, dict):
+            text = (
+                output.get("output")
+                or output.get("stdout")
+                or output.get("stderr")
+                or ""
+            )
+        else:
+            text = output
+
+        text = str(text or "").strip()
+        if not text and not cmd:
+            continue
+
+        blocks.append(f'<shell cmd="{cmd}">')
+        blocks.append(text or "(no output)")
+        blocks.append("</shell>")
+
+    if blocks:
+        return "<shell_outputs>\n" + "\n".join(blocks) + "\n</shell_outputs>"
+
+    return ""
+
+
+def subagent_feedback_from_execution_result(execution_result, max_chars=5000):
+    """Return bounded subagent deliverables from an execution batch."""
+    blocks = []
+    for result in execution_result.get("results") or []:
+        if not isinstance(result, dict) or result.get("url") != "/subagent":
+            continue
+        output = result.get("output")
+        subagent_result = output.get("subagent_result") if isinstance(output, dict) else None
+        if not isinstance(subagent_result, dict):
+            continue
+        safe_result = {
+            "success": bool(subagent_result.get("success")),
+            "status": str(subagent_result.get("status") or ""),
+            "role": str(subagent_result.get("role") or ""),
+            "mode": str(subagent_result.get("mode") or ""),
+            "summary": str(subagent_result.get("summary") or ""),
+            "artifacts": [
+                str(path)[:300] for path in list(subagent_result.get("artifacts") or [])[:20]
+            ],
+            "run_id": str(subagent_result.get("run_id") or ""),
+            "error": str(subagent_result.get("error") or "")[:1000],
+        }
+        encoded = json.dumps(safe_result, ensure_ascii=False)
+        if len(encoded) > max_chars:
+            overflow = len(encoded) - max_chars
+            keep = max(0, len(safe_result["summary"]) - overflow - 100)
+            safe_result["summary"] = safe_result["summary"][:keep] + "\n[TRUNCATED]"
+            encoded = json.dumps(safe_result, ensure_ascii=False)
+        if len(encoded) > max_chars:
+            safe_result["artifacts"] = []
+            safe_result["error"] = safe_result["error"][:200]
+            encoded = json.dumps(safe_result, ensure_ascii=False)
+        blocks.append(f"<subagent_result>{encoded}</subagent_result>")
+    return "\n".join(blocks)
+
+
+def merge_execution_turn_feedback(
+    execution_result,
+    run_state=None,
+    shell_context="",
+    execution_notes="",
+):
+    """Merge shell and subagent results from one executed batch into planner context."""
+    shell_feedback = shell_feedback_from_execution_result(
+        execution_result,
+        run_state=run_state,
+    )
+    subagent_feedback = subagent_feedback_from_execution_result(execution_result)
+    if shell_feedback.strip():
+        shell_context = append_bounded(shell_context, shell_feedback)
+    if subagent_feedback.strip():
+        execution_notes = append_bounded(execution_notes, subagent_feedback)
+    return shell_context, execution_notes
+
+
+def format_completed_batch_note(calls, *, tag="completed_batch", guidance=None):
+    guidance = guidance or (
+        "The previous API batch executed successfully but did not call /done. "
+        "Do not repeat these successful calls. Continue the task and use /done only "
+        "when all requirements are complete."
+    )
+    return (
+        f"<{tag}>\n"
+        f"{guidance}\n"
+        f"<successful_calls>{json.dumps(calls, ensure_ascii=False)}</successful_calls>\n"
+        f"</{tag}>"
+    )
 
 
 def build_feedback_context(run_state, read_cache=None, max_chars=12000):
@@ -207,6 +324,35 @@ if __name__ == "__main__":
     assert "<shell_outputs>" in shell_fb
     assert "total 0" in shell_fb
     assert "<read_file" not in shell_fb
+
+    exec_result = {
+        "results": [
+            {
+                "url": "/shell",
+                "payload": {"cmd": "pytest"},
+                "output": {"output": "1 passed"},
+            },
+            {
+                "url": "/subagent",
+                "output": {
+                    "subagent_result": {
+                        "success": True,
+                        "status": "completed",
+                        "role": "explore",
+                        "mode": "readonly",
+                        "summary": "found issue",
+                        "artifacts": [],
+                    }
+                },
+            },
+        ]
+    }
+    shell_context, notes = merge_execution_turn_feedback(exec_result, run_state=run_state)
+    assert "pytest" in shell_context
+    assert "found issue" in notes
+    note = format_completed_batch_note([{"url": "/shell", "payload": {"cmd": "pytest"}}])
+    assert "<completed_batch>" in note
+    assert "pytest" in note
 
     print(fb)
     print("BUILD_FEEDBACK_CONTEXT SELF TEST PASSED")
