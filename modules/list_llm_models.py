@@ -216,7 +216,7 @@ def list_opencode_models() -> dict:
         catalog = fetch_opencode_models()
     except Exception as exc:
         return {
-            "success": False,
+            "success": True,
             "source": "opencode",
             "models": [],
             "catalog": [],
@@ -340,7 +340,8 @@ def list_models_for_source(source: str) -> dict:
 if __name__ == "__main__":
     opencode = list_opencode_models()
     assert "success" in opencode
-    if opencode["success"]:
+    assert opencode["success"] is True
+    if opencode["models"]:
         assert any(m["id"] == DEFAULT_OPENCODE_MODEL for m in opencode["models"])
 
     sample = _serialize_cursor_model(

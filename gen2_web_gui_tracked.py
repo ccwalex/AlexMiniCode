@@ -944,6 +944,28 @@ def git_action(data):
     else: raise ValueError('unsupported git action')
     p=subprocess.run(['git']+args,cwd=str(project_root()),capture_output=True,text=True,timeout=120)
     return {'success':p.returncode==0,'cmd':'git '+' '.join(args),'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}
+def opencode_bootstrap_api():
+    ensure_module_path()
+    from modules.opencode_config import load_opencode_config, public_opencode_config
+
+    return {
+        "success": True,
+        "config": public_opencode_config(load_opencode_config()),
+    }
+
+
+def opencode_save_api(data):
+    ensure_module_path()
+    from modules.opencode_config import public_opencode_config, save_opencode_config
+
+    cfg = data.get("config") if isinstance(data, dict) else {}
+    saved = save_opencode_config(cfg if isinstance(cfg, dict) else data)
+    return {
+        "success": True,
+        "config": public_opencode_config(saved),
+    }
+
+
 def github_bootstrap_api():
     ensure_module_path()
     from modules.github_git import github_bootstrap
@@ -1137,6 +1159,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/discussion/context': return jresp(self,discussion_bootstrap())
             if path=='/api/model_config': return jresp(self,model_config_bootstrap())
             if path=='/api/github': return jresp(self,github_bootstrap_api())
+            if path=='/api/opencode': return jresp(self,opencode_bootstrap_api())
             q=urlparse(self.path).query
             if path=='/api/model_config/models':
                 params=parse_qs(q)
@@ -1191,6 +1214,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/model_config/save':
                 return jresp(self, model_config_save(data))
             if path=='/api/git': return jresp(self,git_action(data))
+            if path=='/api/opencode/save': return jresp(self, opencode_save_api(data))
             if path=='/api/github/save': return jresp(self,github_save_api(data))
             if path=='/api/github/test': return jresp(self,github_test_api(data))
             if path=='/api/github/remote': return jresp(self,github_remote_api(data))

@@ -182,8 +182,11 @@ def _normalize_role_entry(entry: dict | None, role: str) -> dict:
     if source not in LLM_SOURCES:
         source = base["source"]
 
-    model = str(entry.get("model") or base["model"]).strip() or base["model"]
-    if source == "opencode" and model in LEGACY_RELAY_MODELS:
+    if isinstance(entry, dict) and "model" in entry and not str(entry.get("model") or "").strip():
+        model = ""
+    else:
+        model = str(entry.get("model") or base["model"]).strip() or base["model"]
+    if source == "opencode" and model and model in LEGACY_RELAY_MODELS:
         model = getattr(CFG, "DEFAULT_MODEL", "deepseek-v4-flash")
     effort = effort_selector_value(entry.get("effort") or base["effort"])
     cursor_params = normalize_cursor_params(entry.get("cursor_params"))
@@ -360,4 +363,13 @@ if __name__ == "__main__":
     assert get_parse_fallback("execution")["model"]
     saved = save_model_config(cfg)
     assert saved["roles"]["debug"]["model"] == "deepseek-v4-flash"
+    empty_model = save_model_config(
+        {
+            "roles": {
+                **saved["roles"],
+                "debug": {**saved["roles"]["debug"], "model": ""},
+            }
+        }
+    )
+    assert empty_model["roles"]["debug"]["model"] == ""
     print("MODEL_CONFIG SELF TEST PASSED")

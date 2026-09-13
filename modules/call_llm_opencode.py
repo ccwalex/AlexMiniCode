@@ -40,13 +40,18 @@ MODULE_METADATA = {
 
 
 def _get_api_key() -> str:
+    from opencode_config import get_opencode_api_key
+
+    value = get_opencode_api_key()
+    if value:
+        return value
     for env_name in ("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"):
         value = os.environ.get(env_name, "").strip()
         if value:
             return value
     raise RuntimeError(
-        "OPENCODE_API_KEY environment variable is not set "
-        "(OPENCODE_ZEN_API_KEY is also accepted)"
+        "OpenCode API key is not configured "
+        "(set it in OpenCode Go settings, OPENCODE_API_KEY, or OPENCODE_ZEN_API_KEY)"
     )
 
 

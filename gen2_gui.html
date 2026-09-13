@@ -84,6 +84,7 @@ button:disabled{opacity:.55;cursor:wait}
     <button class="tab active" id="tabExecution" onclick="switchMode('execution')">Execution</button>
     <button class="tab" id="tabPlanning" onclick="switchMode('planning')">Planning</button>
     <button class="secondary" onclick="openModelConfig()">Model Config</button>
+    <button class="secondary" onclick="openOpenCodeConfig()">OpenCode Go</button>
     <button class="secondary" onclick="openGitHubConfig()">GitHub</button>
   </div>
 </div>
@@ -228,6 +229,22 @@ Do not allow shell redirection for file writes.</textarea>
 </div>
 </div>
 
+<div id="opencodeModal" class="modal-backdrop">
+<div class="modal">
+<h2>OpenCode Go</h2>
+<div class="small">Optional API key for OpenCode Go LLM calls. Stored locally in <code>agent_memory/opencode_config.json</code>. Leave empty to clear the saved key or rely on <code>OPENCODE_API_KEY</code> in the environment.</div>
+<div id="opencodeStatus" class="small muted"></div>
+<div style="margin-top:10px">
+<label>API key</label>
+<input id="ocApiKey" type="password" placeholder="optional">
+</div>
+<div class="small" style="margin-top:8px">Key status: <span id="ocKeyStatus">not configured</span></div>
+<label class="small"><input type="checkbox" id="ocClearKey"> Clear saved API key</label>
+<button class="good" onclick="saveOpenCodeConfig()">Save</button>
+<button class="secondary" onclick="closeOpenCodeConfig()">Close</button>
+</div>
+</div>
+
 <div id="githubModal" class="modal-backdrop">
 <div class="modal wide">
 <h2>GitHub</h2>
@@ -276,6 +293,7 @@ Do not allow shell redirection for file writes.</textarea>
 let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set();
 let selectedDecisions=new Set(), discussionSession=null, injectedEntries=[], discussionBusy=false;
 let modelConfigState=null, modelOptionsCache={}, cursorCatalogCache=null;
+let opencodeState=null;
 let githubState=null;
 
 async function api(p,o={}){
@@ -446,7 +464,13 @@ async function fetchModelsForSource(source, forceRefresh=false){
   const key=String(source||'opencode');
   if(!forceRefresh && modelOptionsCache[key]) return modelOptionsCache[key];
   const d=await api('/api/model_config/models?source='+encodeURIComponent(key));
-  if(!d.success) throw new Error(d.error||('failed to load models for '+key));
+  if(!d.success){
+    if(key==='opencode'){
+      modelOptionsCache[key]=d.models||[];
+      return modelOptionsCache[key];
+    }
+    throw new Error(d.error||('failed to load models for '+key));
+  }
   modelOptionsCache[key]=d.models||[];
   if(key==='cursor'){
     cursorCatalogCache=d;
@@ -528,17 +552,16 @@ function applyModelSummaries(summary){
   discSettingsSummary.textContent=formatRoleSummary(s.discussion);
 }
 
-function renderModelOptions(models, selectedValue){
+function renderModelOptions(models, selectedValue, includeNone=true){
+  const noneValue=encodeModelOption({id:'',params:[]});
+  const noneOpt=includeNone?`<option value="${esc(noneValue)}" ${selectedValue===noneValue?'selected':''}>(none)</option>`:'';
   const opts=(models||[]).map(m=>{
     const value=encodeModelOption(m);
     const label=m.label||m.id;
     return `<option value="${esc(value)}" ${value===selectedValue?'selected':''}>${esc(label)}</option>`;
   }).join('');
-  if(!opts){
-    const fallback=selectedValue||encodeModelOption({id:'',params:[]});
-    return `<option value="${esc(fallback)}">${esc('(none)')}</option>`;
-  }
-  return opts;
+  if(!opts) return noneOpt||`<option value="${esc(noneValue)}">${esc('(none)')}</option>`;
+  return noneOpt+opts;
 }
 
 function roleConfigRowHtml(r, entry){
@@ -703,6 +726,43 @@ async function openModelConfig(){
 
 function closeModelConfig(){
   modelConfigModal.classList.remove('open');
+}
+
+function applyOpenCodeState(state){
+  opencodeState=state||{};
+  const cfg=opencodeState.config||{};
+  document.getElementById('ocApiKey').value='';
+  document.getElementById('ocKeyStatus').textContent=cfg.api_key_configured?`configured (${cfg.api_key_masked||'saved'})`:'not configured';
+}
+
+async function openOpenCodeConfig(){
+  document.getElementById('opencodeStatus').textContent='Loading...';
+  document.getElementById('opencodeModal').classList.add('open');
+  try{
+    const d=await api('/api/opencode');
+    applyOpenCodeState(d);
+    document.getElementById('opencodeStatus').textContent='Empty API key is allowed. Runtime also checks OPENCODE_API_KEY / OPENCODE_ZEN_API_KEY.';
+  }catch(e){
+    document.getElementById('opencodeStatus').textContent='Failed to load OpenCode settings: '+e.message;
+  }
+}
+
+function closeOpenCodeConfig(){
+  document.getElementById('opencodeModal').classList.remove('open');
+}
+
+async function saveOpenCodeConfig(){
+  try{
+    const payload={config:{api_key:document.getElementById('ocApiKey').value.trim()}};
+    if(document.getElementById('ocClearKey').checked) payload.config.clear_api_key=true;
+    const d=await api('/api/opencode/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    applyOpenCodeState(d);
+    document.getElementById('ocClearKey').checked=false;
+    modelOptionsCache={};
+    document.getElementById('opencodeStatus').textContent='OpenCode settings saved.';
+  }catch(e){
+    document.getElementById('opencodeStatus').textContent='Save failed: '+e.message;
+  }
 }
 
 function collectGitHubConfigFromUI(){
