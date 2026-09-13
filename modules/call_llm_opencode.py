@@ -11,7 +11,7 @@ from cfg import CFG
 from model_config import normalize_effort
 from opencode_registry import (
     DEFAULT_OPENCODE_MODEL,
-    OPENCODE_GO_BASE,
+    get_opencode_go_base,
     normalize_model_id,
     resolve_endpoint_path,
     resolve_transport,
@@ -42,17 +42,7 @@ MODULE_METADATA = {
 def _get_api_key() -> str:
     from opencode_config import get_opencode_api_key
 
-    value = get_opencode_api_key()
-    if value:
-        return value
-    for env_name in ("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"):
-        value = os.environ.get(env_name, "").strip()
-        if value:
-            return value
-    raise RuntimeError(
-        "OpenCode API key is not configured "
-        "(set it in OpenCode Go settings, OPENCODE_API_KEY, or OPENCODE_ZEN_API_KEY)"
-    )
+    return get_opencode_api_key()
 
 
 def _agent_version() -> str:
@@ -277,7 +267,7 @@ def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None)
             "Install requests or select the Cursor source."
         ) from exc
 
-    url = f"{OPENCODE_GO_BASE.rstrip('/')}{path}"
+    url = f"{get_opencode_go_base().rstrip('/')}{path}"
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     if response.status_code in (401, 403):
         raise RuntimeError(

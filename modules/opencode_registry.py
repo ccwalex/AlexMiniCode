@@ -22,7 +22,16 @@ MODULE_METADATA = {
 OPENCODE_GO_BASE = CFG.OPENCODE_GO_BASE_URL
 DEFAULT_OPENCODE_MODEL = "deepseek-v4-flash"
 MODELS_API_URL = "https://models.opencode.ai/api.json"
-LIVE_MODELS_URL = f"{OPENCODE_GO_BASE.rstrip('/')}/models"
+
+
+def get_opencode_go_base() -> str:
+    from opencode_config import get_opencode_base_url
+
+    return get_opencode_base_url()
+
+
+def live_models_url() -> str:
+    return f"{get_opencode_go_base().rstrip('/')}/models"
 
 TRANSPORT_ENDPOINTS = {
     "chat": "/chat/completions",
@@ -166,7 +175,7 @@ def _fetch_live_model_ids() -> list[str]:
     except ImportError as exc:
         raise RuntimeError("requests package is required for OpenCode model listing") from exc
 
-    response = requests.get(LIVE_MODELS_URL, timeout=30)
+    response = requests.get(live_models_url(), timeout=30)
     response.raise_for_status()
     payload = response.json()
     data = payload.get("data") if isinstance(payload, dict) else payload
