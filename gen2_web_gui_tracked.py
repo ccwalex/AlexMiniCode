@@ -12,6 +12,7 @@ Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes."""
 TERMINAL={'completed','failed','cancelled'}
 _http_server = None
+_jobs_lock = threading.RLock()
 EXCLUDE_DIRS={'.git','__pycache__','.ipynb_checkpoints','node_modules','.venv','venv','env','.pytest_cache','.mypy_cache','.cursor'}
 EXCLUDE_SUFFIXES={'.pyc','.pyo','.png','.jpg','.jpeg','.gif','.webp','.ico','.pdf','.zip','.tar','.gz','.7z','.mp4','.mov','.avi','.sqlite','.db','.parquet','.npy','.npz','.pt','.pth'}
 def source_dir(): return Path(__file__).resolve().parent
@@ -493,6 +494,9 @@ def terminate_process_group(pid, grace_seconds=2.0):
 
     return True, "killed"
 def stop_current_job():
+    with _jobs_lock:
+        return _stop_current_job_unlocked()
+def _stop_current_job_unlocked():
     ensure_storage()
 
     cur = load_current()
@@ -536,107 +540,120 @@ def stop_current_job():
         "reason": msg,
     }
 def stop_all_jobs():
-    ensure_storage()
+    with _jobs_lock:
+        ensure_storage()
 
-    stop_result = stop_current_job()
-    queued = load_queue()
-    save_queue([])
+        stop_result = _stop_current_job_unlocked()
+        queued = load_queue()
+        save_queue([])
 
-    for jid in queued:
-        try:
+        for jid in queued:
+            try:
+                update_status(
+                    safe_job_id(jid),
+                    status="cancelled",
+                    success=False,
+                    ended_at=now(),
+                    reason="removed from queue by user",
+                )
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "stopped_current": stop_result,
+            "cleared_queue": queued,
+            "queue_count": len(queued),
+        }
+def cancel_queued_jobs(data):
+    with _jobs_lock:
+        ensure_storage()
+
+        job_ids = data.get("job_ids") if isinstance(data, dict) else None
+        if not isinstance(job_ids, list) or not job_ids:
+            raise ValueError("job_ids required")
+
+        cur = load_current()
+        current_id = cur.get("job_id")
+        q = load_queue()
+        cancelled = []
+        skipped = []
+        requested = []
+        seen = set()
+
+        for raw in job_ids:
+            try:
+                jid = safe_job_id(str(raw).strip())
+            except Exception as e:
+                skipped.append({"job_id": raw, "reason": f"invalid job id: {e}"})
+                continue
+            if jid in seen:
+                continue
+            seen.add(jid)
+            requested.append(jid)
+
+        queued_set = set(q)
+        cancel_set = set()
+        for jid in requested:
+            if jid == current_id:
+                skipped.append({"job_id": jid, "reason": "currently running"})
+                continue
+            if jid not in queued_set:
+                skipped.append({"job_id": jid, "reason": "not in queue"})
+                continue
+            cancel_set.add(jid)
+            cancelled.append(jid)
             update_status(
-                safe_job_id(jid),
+                jid,
                 status="cancelled",
                 success=False,
                 ended_at=now(),
                 reason="removed from queue by user",
             )
-        except Exception:
-            pass
 
-    return {
-        "success": True,
-        "stopped_current": stop_result,
-        "cleared_queue": queued,
-        "queue_count": len(queued),
-    }
-def cancel_queued_jobs(data):
-    ensure_storage()
-
-    job_ids = data.get("job_ids") if isinstance(data, dict) else None
-    if not isinstance(job_ids, list) or not job_ids:
-        raise ValueError("job_ids required")
-
-    cur = load_current()
-    current_id = cur.get("job_id")
-    q = load_queue()
-    cancelled = []
-    skipped = []
-    requested = set()
-
-    for raw in job_ids:
-        try:
-            requested.add(safe_job_id(str(raw).strip()))
-        except Exception as e:
-            skipped.append({"job_id": raw, "reason": f"invalid job id: {e}"})
-
-    for jid in requested:
-        if jid == current_id:
-            skipped.append({"job_id": jid, "reason": "currently running"})
-            continue
-        if jid not in q:
-            skipped.append({"job_id": jid, "reason": "not in queue"})
-            continue
-        q = [x for x in q if x != jid]
-        update_status(
-            jid,
-            status="cancelled",
-            success=False,
-            ended_at=now(),
-            reason="removed from queue by user",
-        )
-        cancelled.append(jid)
-
-    save_queue(q)
-    return {
-        "success": True,
-        "cancelled": cancelled,
-        "skipped": skipped,
-        "queue": q,
-        "queue_count": len(q),
-    }
+        remaining = [x for x in q if x not in cancel_set]
+        save_queue(remaining)
+        return {
+            "success": True,
+            "cancelled": cancelled,
+            "skipped": skipped,
+            "queue": remaining,
+            "queue_count": len(remaining),
+        }
 def clear_completed_jobs():
-    ensure_storage()
+    with _jobs_lock:
+        ensure_storage()
+        refresh_current()
 
-    cur = load_current()
-    current_id = cur.get("job_id")
-    queued = set(load_queue())
-    removed = []
-    skipped = []
+        cur = load_current()
+        current_id = cur.get("job_id")
+        queued = set(load_queue())
+        removed = []
+        skipped = []
 
-    for ch in jobs_dir().iterdir():
-        if not ch.is_dir():
-            continue
-        try:
-            jid = safe_job_id(ch.name)
-        except Exception:
-            continue
-        if jid == current_id or jid in queued:
-            skipped.append({"job_id": jid, "reason": "active or queued"})
-            continue
-        st = read_json(ch / "status.json", {}) or {}
-        if st.get("status") not in TERMINAL:
-            skipped.append({"job_id": jid, "reason": "not terminal"})
-            continue
-        shutil.rmtree(ch, ignore_errors=True)
-        removed.append(jid)
+        for ch in list(jobs_dir().iterdir()):
+            if not ch.is_dir():
+                continue
+            try:
+                jid = safe_job_id(ch.name)
+            except Exception:
+                continue
+            if jid == current_id or jid in queued:
+                skipped.append({"job_id": jid, "reason": "active or queued"})
+                continue
+            st = read_json(ch / "status.json", {}) or {}
+            if st.get("status") not in TERMINAL:
+                skipped.append({"job_id": jid, "reason": "not terminal"})
+                continue
+            shutil.rmtree(ch, ignore_errors=True)
+            removed.append(jid)
 
-    return {
-        "success": True,
-        "removed": removed,
-        "removed_count": len(removed),
-        "skipped": skipped,
-    }
+        return {
+            "success": True,
+            "removed": removed,
+            "removed_count": len(removed),
+            "skipped": skipped,
+        }
 def shutdown_server():
     jobs_result = stop_all_jobs()
     srv = _http_server
@@ -662,71 +679,73 @@ def restart_config_from_job(job_dir, config):
         final_task_builder=final_task,
     )
 def restart_job(data):
-    ensure_storage()
+    with _jobs_lock:
+        ensure_storage()
 
-    jid = str(data.get("job_id", "")).strip()
-    if not jid:
-        raise ValueError("job_id required")
+        jid = str(data.get("job_id", "")).strip()
+        if not jid:
+            raise ValueError("job_id required")
 
-    jid = safe_job_id(jid)
-    d = job_dir(jid)
+        jid = safe_job_id(jid)
+        d = job_dir(jid)
 
-    if not d.exists():
-        raise FileNotFoundError("job not found")
+        if not d.exists():
+            raise FileNotFoundError("job not found")
 
-    config = read_json(d / "config.json", None)
-    if not isinstance(config, dict):
-        raise RuntimeError("job has no valid config.json")
+        config = read_json(d / "config.json", None)
+        if not isinstance(config, dict):
+            raise RuntimeError("job has no valid config.json")
 
-    # If restarting the currently running job, stop it first.
-    cur = load_current()
-    if cur.get("job_id") == jid:
-        stop_current_job()
+        # If restarting the currently running job, stop it first.
+        cur = load_current()
+        if cur.get("job_id") == jid:
+            _stop_current_job_unlocked()
 
-    config = restart_config_from_job(d, config)
-    new_jid = create_job(config)
-    started = start_next()
+        config = restart_config_from_job(d, config)
+        new_jid = create_job(config)
+        started = start_next()
 
-    return {
-        "success": True,
-        "old_job_id": jid,
-        "new_job_id": new_jid,
-        "started": started,
-        "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
-    }
-def restart_current_job():
-    ensure_storage()
-
-    cur = load_current()
-    jid = cur.get("job_id")
-
-    if not jid:
         return {
-            "success": False,
-            "reason": "no current job to restart",
+            "success": True,
+            "old_job_id": jid,
+            "new_job_id": new_jid,
+            "started": started,
+            "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
         }
+def restart_current_job():
+    with _jobs_lock:
+        ensure_storage()
 
-    jid = safe_job_id(jid)
-    d = job_dir(jid)
+        cur = load_current()
+        jid = cur.get("job_id")
 
-    config = read_json(d / "config.json", None)
-    if not isinstance(config, dict):
-        raise RuntimeError("current job has no valid config.json")
+        if not jid:
+            return {
+                "success": False,
+                "reason": "no current job to restart",
+            }
 
-    stop_result = stop_current_job()
+        jid = safe_job_id(jid)
+        d = job_dir(jid)
 
-    config = restart_config_from_job(d, config)
-    new_jid = create_job(config)
-    started = start_next()
+        config = read_json(d / "config.json", None)
+        if not isinstance(config, dict):
+            raise RuntimeError("current job has no valid config.json")
 
-    return {
-        "success": True,
-        "stopped": stop_result,
-        "old_job_id": jid,
-        "new_job_id": new_jid,
-        "started": started,
-        "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
-    }
+        stop_result = _stop_current_job_unlocked()
+
+        config = restart_config_from_job(d, config)
+        new_jid = create_job(config)
+        started = start_next()
+
+        return {
+            "success": True,
+            "stopped": stop_result,
+            "old_job_id": jid,
+            "new_job_id": new_jid,
+            "started": started,
+            "reused_rewritten_task": bool(config.get("skip_task_rewrite")),
+        }
 def normalize_submission(data):
     if not isinstance(data,dict): data={}
     prompt=data.get('prompt') or data.get('task') or ''
@@ -778,33 +797,45 @@ def normalize_submission(data):
     return out
 # jobs
 def create_job(config):
-    ensure_storage(); jid='job_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:8]; d=job_dir(jid); d.mkdir(parents=True,exist_ok=False); t=now()
-    st={'job_id':jid,'status':'queued','success':None,'created_at':t,'updated_at':t,'started_at':None,'ended_at':None,'pid':None,'reason':'queued','llm_source':config.get('llm_source'),'model':config.get('model'),'effort':config.get('effort'),'max_tokens':config.get('max_tokens'),'task_preview':config.get('original_prompt',config.get('task',''))[:300]}
-    write_json(d/'config.json',config); write_json(d/'status.json',st); write_text(d/'stdout.log',''); write_text(d/'stderr.log',''); write_text(d/'task.txt',config.get('task',''))
-    q=load_queue(); q.append(jid); save_queue(q); return jid
+    with _jobs_lock:
+        ensure_storage(); jid='job_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:8]; d=job_dir(jid); d.mkdir(parents=True,exist_ok=False); t=now()
+        st={'job_id':jid,'status':'queued','success':None,'created_at':t,'updated_at':t,'started_at':None,'ended_at':None,'pid':None,'reason':'queued','llm_source':config.get('llm_source'),'model':config.get('model'),'effort':config.get('effort'),'max_tokens':config.get('max_tokens'),'task_preview':config.get('original_prompt',config.get('task',''))[:300]}
+        write_json(d/'config.json',config); write_json(d/'status.json',st); write_text(d/'stdout.log',''); write_text(d/'stderr.log',''); write_text(d/'task.txt',config.get('task',''))
+        q=load_queue(); q.append(jid); save_queue(q); return jid
 def refresh_current():
-    c=load_current(); jid,pid=c.get('job_id'),c.get('pid')
-    if not jid: save_current({}); return None
-    try: jid=safe_job_id(jid)
-    except Exception: save_current({}); return None
-    st=read_json(job_dir(jid)/'status.json',{}) or {}
-    if st.get('status') in TERMINAL: save_current({}); return None
-    if pid and alive(pid): return c
-    res=read_json(job_dir(jid)/'result.json',None)
-    if isinstance(res,dict):
-        ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
-    else: update_status(jid,status='failed',success=False,ended_at=now(),reason='worker process ended without result.json')
-    save_current({}); return None
+    with _jobs_lock:
+        c=load_current(); jid,pid=c.get('job_id'),c.get('pid')
+        if not jid: save_current({}); return None
+        try: jid=safe_job_id(jid)
+        except Exception: save_current({}); return None
+        st=read_json(job_dir(jid)/'status.json',{}) or {}
+        if st.get('status') in TERMINAL: save_current({}); return None
+        if pid and alive(pid): return c
+        res=read_json(job_dir(jid)/'result.json',None)
+        if isinstance(res,dict):
+            ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
+        else: update_status(jid,status='failed',success=False,ended_at=now(),reason='worker process ended without result.json')
+        save_current({}); return None
 def start_next():
-    ensure_storage(); cur=refresh_current()
-    if cur and cur.get('job_id'): return {'started':False,'reason':'job already running','current':cur}
-    q=load_queue()
-    if not q: return {'started':False,'reason':'queue empty','current':None}
-    jid=q.pop(0); save_queue(q); d=job_dir(jid); w=worker_script()
-    if not w.exists(): update_status(jid,status='failed',success=False,ended_at=now(),reason=f'worker not found: {w}'); return {'started':False,'reason':'worker not found'}
-    cmd=[sys.executable,'-u',str(w),'--job-dir',str(d.resolve())]
-    p=subprocess.Popen(cmd,cwd=str(project_root()),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
-    cur={'job_id':jid,'pid':p.pid,'started_at':now(),'cmd':cmd}; save_current(cur); update_status(jid,status='running',success=None,pid=p.pid,started_at=cur['started_at'],reason='worker started'); return {'started':True,'current':cur,'reason':'worker started'}
+    with _jobs_lock:
+        ensure_storage(); cur=refresh_current()
+        if cur and cur.get('job_id'): return {'started':False,'reason':'job already running','current':cur}
+        q=load_queue()
+        while q:
+            jid=q.pop(0)
+            st=read_json(job_dir(jid)/'status.json',{}) or {}
+            if st.get('status') in TERMINAL:
+                continue
+            d=job_dir(jid); w=worker_script()
+            save_queue(q)
+            if not w.exists():
+                update_status(jid,status='failed',success=False,ended_at=now(),reason=f'worker not found: {w}')
+                return {'started':False,'reason':'worker not found'}
+            cmd=[sys.executable,'-u',str(w),'--job-dir',str(d.resolve())]
+            p=subprocess.Popen(cmd,cwd=str(project_root()),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            cur={'job_id':jid,'pid':p.pid,'started_at':now(),'cmd':cmd}; save_current(cur); update_status(jid,status='running',success=None,pid=p.pid,started_at=cur['started_at'],reason='worker started'); return {'started':True,'current':cur,'reason':'worker started'}
+        save_queue(q)
+        return {'started':False,'reason':'queue empty','current':None}
 def list_jobs():
     ensure_storage(); out=[]
     for ch in jobs_dir().iterdir():
@@ -846,29 +877,32 @@ def job_progress(jid):
         'active_batch_id':active_batch_id,
         'updated_at':now(),
     }
-def tick(): refresh_current(); s=start_next(); return {'queue':load_queue(),'current':load_current(),'started':s}
+def tick():
+    with _jobs_lock:
+        refresh_current(); s=start_next(); return {'queue':load_queue(),'current':load_current(),'started':s}
 # subagent API (for calling gen2 from another agent)
 def subagent_status():
-    ensure_storage()
-    refresh_current()
-    cur = load_current()
-    q = load_queue()
-    current_job = None
-    if cur and cur.get('job_id'):
-        try:
-            current_job = read_json(job_dir(cur['job_id']) / 'status.json', {})
-        except Exception:
-            current_job = cur
-    return {
-        'success': True,
-        'service': 'gen2_web_gui',
-        'project_root': str(project_root()),
-        'queue_length': len(q),
-        'queue': q,
-        'current': cur,
-        'current_job': current_job,
-        'worker': str(worker_script()),
-    }
+    with _jobs_lock:
+        ensure_storage()
+        refresh_current()
+        cur = load_current()
+        q = load_queue()
+        current_job = None
+        if cur and cur.get('job_id'):
+            try:
+                current_job = read_json(job_dir(cur['job_id']) / 'status.json', {})
+            except Exception:
+                current_job = cur
+        return {
+            'success': True,
+            'service': 'gen2_web_gui',
+            'project_root': str(project_root()),
+            'queue_length': len(q),
+            'queue': q,
+            'current': cur,
+            'current_job': current_job,
+            'worker': str(worker_script()),
+        }
 def _job_is_terminal(jid):
     st = read_json(job_dir(jid) / 'status.json', {}) or {}
     return st.get('status') in TERMINAL

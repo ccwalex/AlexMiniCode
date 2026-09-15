@@ -957,12 +957,22 @@ async function refreshEverything(){
     currentJobId=tick.current?.job_id||null;
   }catch(e){}
   await loadJobs();
-  if(selectedJob)await loadJob(selectedJob);
+  if(selectedJob){
+    try{await loadJob(selectedJob)}
+    catch(e){
+      selectedJob=null;
+      selectedTitle.textContent='No job selected';
+      selectedMeta.textContent='';
+      planProgress.innerHTML='Select a job to see live step progress.';
+      logs.textContent='Select a job.';
+    }
+  }
 }
 async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
 async function loadJobs(){
   const arr=await api('/api/jobs');
   const queuedSet=new Set(jobQueue);
+  selectedQueuedJobs=new Set([...selectedQueuedJobs].filter(id=>queuedSet.has(id)&&id!==currentJobId));
   jobs.innerHTML=arr.map(j=>{
     const id=String(j.job_id||'');
     const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId;
