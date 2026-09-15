@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gen2 web GUI with sequential queue, tracked-folder registry contexts, file-tree injection, logs, and git."""
-import argparse, json, os, signal, subprocess, sys, time, uuid
+import argparse, json, os, shutil, signal, subprocess, sys, threading, time, uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,6 +11,7 @@ Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes."""
 TERMINAL={'completed','failed','cancelled'}
+_http_server = None
 EXCLUDE_DIRS={'.git','__pycache__','.ipynb_checkpoints','node_modules','.venv','venv','env','.pytest_cache','.mypy_cache','.cursor'}
 EXCLUDE_SUFFIXES={'.pyc','.pyo','.png','.jpg','.jpeg','.gif','.webp','.ico','.pdf','.zip','.tar','.gz','.7z','.mp4','.mov','.avi','.sqlite','.db','.parquet','.npy','.npz','.pt','.pth'}
 def source_dir(): return Path(__file__).resolve().parent
@@ -559,6 +560,98 @@ def stop_all_jobs():
         "cleared_queue": queued,
         "queue_count": len(queued),
     }
+def cancel_queued_jobs(data):
+    ensure_storage()
+
+    job_ids = data.get("job_ids") if isinstance(data, dict) else None
+    if not isinstance(job_ids, list) or not job_ids:
+        raise ValueError("job_ids required")
+
+    cur = load_current()
+    current_id = cur.get("job_id")
+    q = load_queue()
+    cancelled = []
+    skipped = []
+    requested = set()
+
+    for raw in job_ids:
+        try:
+            requested.add(safe_job_id(str(raw).strip()))
+        except Exception as e:
+            skipped.append({"job_id": raw, "reason": f"invalid job id: {e}"})
+
+    for jid in requested:
+        if jid == current_id:
+            skipped.append({"job_id": jid, "reason": "currently running"})
+            continue
+        if jid not in q:
+            skipped.append({"job_id": jid, "reason": "not in queue"})
+            continue
+        q = [x for x in q if x != jid]
+        update_status(
+            jid,
+            status="cancelled",
+            success=False,
+            ended_at=now(),
+            reason="removed from queue by user",
+        )
+        cancelled.append(jid)
+
+    save_queue(q)
+    return {
+        "success": True,
+        "cancelled": cancelled,
+        "skipped": skipped,
+        "queue": q,
+        "queue_count": len(q),
+    }
+def clear_completed_jobs():
+    ensure_storage()
+
+    cur = load_current()
+    current_id = cur.get("job_id")
+    queued = set(load_queue())
+    removed = []
+    skipped = []
+
+    for ch in jobs_dir().iterdir():
+        if not ch.is_dir():
+            continue
+        try:
+            jid = safe_job_id(ch.name)
+        except Exception:
+            continue
+        if jid == current_id or jid in queued:
+            skipped.append({"job_id": jid, "reason": "active or queued"})
+            continue
+        st = read_json(ch / "status.json", {}) or {}
+        if st.get("status") not in TERMINAL:
+            skipped.append({"job_id": jid, "reason": "not terminal"})
+            continue
+        shutil.rmtree(ch, ignore_errors=True)
+        removed.append(jid)
+
+    return {
+        "success": True,
+        "removed": removed,
+        "removed_count": len(removed),
+        "skipped": skipped,
+    }
+def shutdown_server():
+    jobs_result = stop_all_jobs()
+    srv = _http_server
+    if srv is None:
+        return {"success": False, "reason": "server not initialized", "jobs": jobs_result}
+
+    def _do_shutdown():
+        time.sleep(0.3)
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+
+    threading.Thread(target=_do_shutdown, daemon=True).start()
+    return {"success": True, "message": "Server shutting down", "jobs": jobs_result}
 def restart_config_from_job(job_dir, config):
     ensure_module_path()
     from modules.job_restart import build_restart_config
@@ -1193,6 +1286,12 @@ class Handler(BaseHTTPRequestHandler):
             
             if path == "/api/stop_all_jobs":
                 return jresp(self, stop_all_jobs())
+            if path == "/api/cancel_queued_jobs":
+                return jresp(self, cancel_queued_jobs(data))
+            if path == "/api/clear_completed_jobs":
+                return jresp(self, clear_completed_jobs())
+            if path == "/api/shutdown":
+                return jresp(self, shutdown_server())
             if path == "/api/subagent/run":
                 return jresp(self, subagent_run(data))
             if path=='/api/discussion/reset':
@@ -1224,11 +1323,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e: return jresp(self,{'success':False,'error':str(e)},500)
     def log_message(self,fmt,*args): sys.stderr.write('[%s] %s\n'%(self.log_date_time_string(),fmt%args))
 def run_server(host='127.0.0.1',port=7860):
-    os.chdir(project_root()); ensure_storage(); srv=ThreadingHTTPServer((host,port),Handler)
+    global _http_server
+    os.chdir(project_root()); ensure_storage(); _http_server=ThreadingHTTPServer((host,port),Handler)
     print(f'Gen2 web GUI serving at http://{host}:{port}/'); print(f'Project root: {project_root()}'); print(f'Source dir: {source_dir()}'); print(f'Worker: {worker_script()}'); print(f'JupyterLab proxy: <base>/proxy/{port}/')
-    try: srv.serve_forever()
+    try: _http_server.serve_forever()
     except KeyboardInterrupt: print('\nStopping Gen2 web GUI.')
-    finally: srv.server_close()
+    finally: _http_server.server_close()
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--host',default='127.0.0.1'); ap.add_argument('--port',type=int,default=7860); a=ap.parse_args(); run_server(a.host,a.port)
 if __name__=='__main__': main()
