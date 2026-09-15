@@ -1,0 +1,16 @@
+{
+  "task_summary": "PyTorch Dataset: local image folder + paired CSV manifest",
+  "sample_code_path": "/workspace/examples/arena_harness_pytorch_dataset/sample_image_csv_dataset.py",
+  "csv_manifest_path": "/workspace/examples/arena_harness_pytorch_dataset/manifest.csv",
+  "requests": {
+    "verifier_write_ok": "verifier_write_ok.json",
+    "verifier_write_bad": "verifier_write_bad.json",
+    "meta_writer": "meta_writer.json"
+  },
+  "arena_usage": [
+    "Open arena.ai and choose a model side.",
+    "For verifier tests: paste messages[0] as system, messages[1] as user.",
+    "For metadata tests: same message order from meta_writer.json.",
+    "Compare model JSON against expected_response_schema / expected_verdict."
+  ]
+}

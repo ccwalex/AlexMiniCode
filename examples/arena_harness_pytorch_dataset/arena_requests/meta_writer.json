@@ -1,0 +1,31 @@
+{
+  "harness_role": "meta_writer",
+  "description": "Generate MODULE_METADATA-compatible JSON for the PyTorch dataset module.",
+  "source_file": "/workspace/examples/arena_harness_pytorch_dataset/sample_image_csv_dataset.py",
+  "target_path": "code/modules/image_csv_dataset.py",
+  "messages": [
+    {
+      "role": "system",
+      "content": "\nYou generate metadata for Python source files.\n\nReturn ONLY valid JSON.\nDo not return markdown.\nDo not return explanations.\nDo not wrap output in code fences.\n\nThe output must match this metadata shape:\n\n{\n  \"name\": \"module_name\",\n  \"type\": \"function or class\",\n  \"description\": \"what it does\",\n  \"functions\": [\n    {\n      \"name\": \"function_name\",\n      \"inputs\": {\n        \"arg\": \"type, shape of input\"\n      },\n      \"outputs\": \"type, shape of output\"\n    }\n  ]\n}\n\nFocus only on what downstream code needs to import or call.\nDo not list imports.\nDo not include private helpers unless they are the primary purpose of the file.\n"
+    },
+    {
+      "role": "user",
+      "content": "\nGenerate metadata for this Python file.\n\nPath:\ncode/modules/image_csv_dataset.py\n\nRules:\n- MODULE_METADATA[\"name\"] must exactly match the primary exported class or function name that downstream code should import.\n- If the file exposes one main function, use type \"function\".\n- If the file exposes one main class, use type \"class\".\n- Identify main component by 2 rules: name does not start with _ and is not reused in other functions / classes in the same document\n- For classes:\n  - functions must include \"__init__\" if constructor inputs matter.\n  - functions must include important public methods.\n  - do not flatten nested methods into separate top-level metadata objects.\n- For functions:\n  - include all meaningful parameters in inputs.\n  - include return type / structure in outputs.\n- If inputs or outputs are arrays, tensors, matrices, dataframes, or nested lists, describe shape and element type.\n- If PyTorch tensors are used, describe tensor shape convention when inferable, e.g. Tensor[batch, channels, height, width].\n- If numpy arrays are used, describe ndarray shape when inferable.\n- If the function mutates files, registry, memory, global state, or object state, mention the side effect in outputs.\n- Do not invent functions, methods, arguments, or outputs.\n- Do not include imports.\n- Return one JSON object only.\n\nPython source:\n\"\"\"PyTorch Dataset: images from a local folder paired with a CSV manifest.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\n\nimport pandas as pd\nimport torch\nfrom PIL import Image\nfrom torch.utils.data import Dataset\n\n\nclass ImageCsvDataset(Dataset):\n    \"\"\"Load RGB images from `image_dir` using rows from a paired CSV file.\n\n    Expected CSV columns:\n      - filename: image file name relative to image_dir\n      - label: integer class id\n    \"\"\"\n\n    def __init__(self, image_dir: str, csv_path: str, transform=None) -> None:\n        self.image_dir = Path(image_dir)\n        self.csv_path = Path(csv_path)\n        self.transform = transform\n\n        if not self.image_dir.is_dir():\n            raise FileNotFoundError(f\"Image directory not found: {self.image_dir}\")\n        if not self.csv_path.is_file():\n            raise FileNotFoundError(f\"CSV manifest not found: {self.csv_path}\")\n\n        self.manifest = pd.read_csv(self.csv_path)\n        required = {\"filename\", \"label\"}\n        missing = required - set(self.manifest.columns)\n        if missing:\n            raise ValueError(f\"CSV missing required columns: {sorted(missing)}\")\n\n    def __len__(self) -> int:\n        return len(self.manifest)\n\n    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:\n        row = self.manifest.iloc[idx]\n        image_path = self.image_dir / str(row[\"filename\"])\n        if not image_path.is_file():\n            raise FileNotFoundError(f\"Missing image file: {image_path}\")\n\n        image = Image.open(image_path).convert(\"RGB\")\n        label = int(row[\"label\"])\n\n        if self.transform is not None:\n            image = self.transform(image)\n\n        if not isinstance(image, torch.Tensor):\n            image = torch.as_tensor(image)\n\n        return image, label\n\n"
+    }
+  ],
+  "expected_response_schema": {
+    "name": "ImageCsvDataset",
+    "type": "class",
+    "description": "str",
+    "functions": [
+      {
+        "name": "str",
+        "inputs": {
+          "arg": "type / shape"
+        },
+        "outputs": "type / shape"
+      }
+    ]
+  },
+  "arena_instructions": "Paste system + user messages into arena.ai. The model must return ONLY one JSON object (no markdown fences)."
+}
