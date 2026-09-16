@@ -714,6 +714,7 @@ def execute_api_call(
                     "conflict operation failed",
                 )
                 result["output"] = conflict_res
+                result["conflict"] = True
                 return result
 
             _mark_completed(run_state, success=False)

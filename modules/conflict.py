@@ -81,6 +81,50 @@ def write_conflict_decision(task: str, conflict: str) -> dict:
     }
 
 
+def is_conflict_failure(call=None, result=None, execution_result=None) -> bool:
+    if isinstance(execution_result, dict) and execution_result.get("conflict"):
+        return True
+    if isinstance(result, dict) and result.get("conflict"):
+        return True
+    for item in (call, result):
+        if isinstance(item, dict) and str(item.get("url") or "").strip() == "/conflict":
+            return True
+    return False
+
+
+def conflict_message(
+    call=None,
+    result=None,
+    execution_result=None,
+    default="Task terminated via /conflict",
+) -> str:
+    if isinstance(execution_result, dict):
+        text = str(execution_result.get("error") or "").strip()
+        if text:
+            return text
+        conflict_output = execution_result.get("conflict_output")
+        if isinstance(conflict_output, dict):
+            text = str(conflict_output.get("conflict") or "").strip()
+            if text:
+                return text
+    if isinstance(result, dict):
+        text = str(result.get("error") or "").strip()
+        if text:
+            return text
+        output = result.get("output")
+        if isinstance(output, dict):
+            text = str(output.get("conflict") or output.get("error") or "").strip()
+            if text:
+                return text
+    if isinstance(call, dict):
+        payload = call.get("payload")
+        if isinstance(payload, dict):
+            text = str(payload.get("conflict") or "").strip()
+            if text:
+                return text
+    return default
+
+
 def execute_conflict(task: str, payload: dict | None) -> dict:
     payload = payload if isinstance(payload, dict) else {}
     conflict = str(payload.get("conflict") or "").strip()
@@ -169,4 +213,11 @@ if __name__ == "__main__":
     assert "10. /conflict" in get_conflict_endpoint_doc("debug")
     assert "PLACEHOLDER" not in doc
     assert "decision.json" in doc
+    assert is_conflict_failure(call={"url": "/conflict", "payload": {"conflict": "x"}})
+    assert is_conflict_failure(result={"url": "/conflict", "error": "bad"})
+    assert is_conflict_failure(execution_result={"conflict": True})
+    assert not is_conflict_failure(call={"url": "/write"}, result={"url": "/write"})
+    assert conflict_message(
+        call={"url": "/conflict", "payload": {"conflict": "ambiguous scope"}},
+    ) == "ambiguous scope"
     print("CONFLICT SELF TEST PASSED")

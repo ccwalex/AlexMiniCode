@@ -25,6 +25,7 @@ MODULE_METADATA = {
 }
 
 import json
+import os
 import time
 
 from cfg import CFG
@@ -34,6 +35,7 @@ from call_llm import call_llm_role
 from parse_api_plan import parse_api_plan
 from structured_llm_retry import call_llm_role_with_parse_retry
 from execute_api_plan import execute_api_plan
+from conflict import conflict_message, is_conflict_failure
 from execute_debug_v2 import execute_debug_v2
 from extract_task_context import (
     extract_task_context,
@@ -115,6 +117,31 @@ def _done_summary(execution_result):
         if isinstance(result, dict) and result.get("url") == "/done":
             return str(result.get("output") or "").strip()
     return ""
+
+
+def _subagent_depth():
+    try:
+        return max(0, int(os.environ.get("AGENT_SUBAGENT_DEPTH", "0") or 0))
+    except Exception:
+        return 0
+
+
+def _format_subagent_failure_feedback(failed_call, failed_result, execution_result=None):
+    parts = []
+    error = ""
+    if isinstance(execution_result, dict):
+        error = str(execution_result.get("error") or "").strip()
+    if not error and isinstance(failed_result, dict):
+        error = str(failed_result.get("error") or "").strip()
+    if error:
+        parts.append(f"error: {error}")
+    if isinstance(failed_call, dict):
+        url = str(failed_call.get("url") or "").strip()
+        if url:
+            parts.append(f"failed_call: {preview(failed_call, 1500)}")
+    if isinstance(failed_result, dict) and failed_result.get("output") is not None:
+        parts.append(f"failed_output: {preview(failed_result.get('output'), 2000)}")
+    return "\n".join(parts) if parts else "Subagent execution failed."
 
 
 def _format_debug_remarks(debug_result, max_output_chars=8000):
@@ -557,11 +584,19 @@ def _run_task_v2(
             print("\n[Main Loop] API batch completed without /done; requesting another planner turn")
             continue
 
-        if status == "failed" and execution_result.get("conflict"):
+        if status == "failed" and is_conflict_failure(
+            call=execution_result.get("failed_call"),
+            result=execution_result.get("failed_result"),
+            execution_result=execution_result,
+        ):
             conflict_output = execution_result.get("conflict_output")
-            conflict_text = execution_result.get("error") or "Task terminated via /conflict"
-            if isinstance(conflict_output, dict):
-                conflict_text = str(conflict_output.get("conflict") or conflict_text)
+            if conflict_output is None and isinstance(execution_result.get("failed_result"), dict):
+                conflict_output = execution_result["failed_result"].get("output")
+            conflict_text = conflict_message(
+                call=execution_result.get("failed_call"),
+                result=execution_result.get("failed_result"),
+                execution_result=execution_result,
+            )
 
             reason = f"Gen2 task failed due to conflict: {conflict_text}"
             print(f"\n{reason}")
@@ -581,6 +616,44 @@ def _run_task_v2(
             }
 
         if status == "failed":
+            failed_call = execution_result.get("failed_call")
+            failed_result = execution_result.get("failed_result")
+
+            if _subagent_depth() >= 1:
+                feedback = _format_subagent_failure_feedback(
+                    failed_call,
+                    failed_result,
+                    execution_result,
+                )
+                error = str(execution_result.get("error") or "").strip()
+                if not error and isinstance(failed_result, dict):
+                    error = str(failed_result.get("error") or "").strip()
+                reason = f"Subagent execution failed: {error or 'API call failed'}"
+                print("\n[Subagent] Skipping debug repair; returning failure to parent")
+                print(f"[Subagent] {reason}")
+
+                _add_error(
+                    run_state,
+                    "subagent_execution_failure",
+                    reason,
+                    context={
+                        "failed_call": failed_call,
+                        "failed_result": failed_result,
+                    },
+                )
+                _mark_completed(run_state, False)
+                _append_run_safe(task, outputs)
+
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "run_state": run_state,
+                    "read_cache": read_cache,
+                    "outputs": outputs,
+                    "reason": reason,
+                    "summary": feedback,
+                }
+
             active_calls = calls
             active_execution = execution_result
             debug_cycle = 0

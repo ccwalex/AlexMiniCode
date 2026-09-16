@@ -338,6 +338,57 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertNotEqual(planner.get("model"), "job-review")
         self.assertNotEqual(get_role_config("subagent_review")["model"], "job-review")
 
+    def test_subagent_skips_debug_and_returns_failure_feedback(self):
+        failed_call = {"url": "/write", "payload": {"path": "a.py", "content": "x"}}
+        failed_result = {
+            "success": False,
+            "url": "/write",
+            "error": "write verifier rejected content",
+            "output": None,
+        }
+
+        with patch.dict(os.environ, {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "review"}), patch.object(
+            task_module,
+            "rewrite_task",
+            return_value={"success": True, "rewritten_task": "delegated task"},
+        ), patch.object(
+            task_module, "build_prompt_v2", return_value=("system", "user")
+        ), patch.object(
+            task_module, "_call_planner_llm", return_value=[]
+        ), patch.object(
+            task_module,
+            "parse_api_plan",
+            return_value={"success": True, "calls": [failed_call]},
+        ), patch.object(
+            task_module,
+            "execute_api_plan",
+            return_value={
+                "success": False,
+                "status": "failed",
+                "run_state": None,
+                "read_cache": {},
+                "results": [failed_result],
+                "failed_call": failed_call,
+                "failed_result": failed_result,
+                "error": "write verifier rejected content",
+            },
+        ), patch.object(
+            task_module, "execute_debug_v2"
+        ) as debug, patch.object(
+            task_module, "append_run"
+        ):
+            result = task_module.run_task_v2(
+                "delegated task",
+                max_iterations=3,
+                max_retries=2,
+            )
+
+        self.assertFalse(result["success"], result)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("write verifier rejected content", result["reason"])
+        self.assertIn("write verifier rejected content", result["summary"])
+        debug.assert_not_called()
+
     def test_main_loop_replans_with_only_subagent_summary(self):
         prompts = []
         executions = {"count": 0}

@@ -19,6 +19,7 @@ MODULE_METADATA = {
 }
 
 
+from conflict import conflict_message, is_conflict_failure
 from execute_api_call import execute_api_call
 from propagate_module_io_change import flush_dependency_cascades
 from run_state import RunState
@@ -395,6 +396,8 @@ def execute_api_plan(
                 except Exception:
                     pass
 
+            conflict = is_conflict_failure(call=call, result=result)
+            conflict_output = result.get("output") if conflict else None
             return _finalize_plan_return(
                 run_state,
                 read_cache,
@@ -409,8 +412,13 @@ def execute_api_plan(
                     "failed_result": result,
                     "feedback": None,
                     "done": False,
-                    "conflict": False,
-                    "error": result.get("error", "API call failed"),
+                    "conflict": conflict,
+                    "conflict_output": conflict_output,
+                    "error": conflict_message(
+                        call=call,
+                        result=result,
+                        default=result.get("error", "API call failed"),
+                    ),
                 },
             )
 
