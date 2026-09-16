@@ -52,7 +52,8 @@ Payload:
 Rules:
 - Use /read only when necessary file content is not already attached.
 - Do not read the same file repeatedly unless the file may have changed.
-- If many files must be reviewed before deciding, prefer trailing /subagent review calls instead of /read for every path.
+- Prefer trailing review /subagent calls over parent /read when surveying, tracing, or comparing files.
+- Use parent /read for the few files you already know you will edit or must quote in the next parent action.
 - If /read is used only so you can inspect before deciding, /request_feedback should usually be the final call.
 - If this turn already includes a trailing /subagent batch, those calls may follow /read in the same turn."""
         )
@@ -262,10 +263,10 @@ def build_prompt_v2(
 5. /subagent
 
 Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
-If task is expected to modify less than 3 files, prefer to do the work yourself instead of delegating.
-Strongly prefer /subagent over reading many files in the parent turn.
-Prefer reading large files with review subagents instead of parent /read, unless you expect to edit that file or take later actions that depend on its full detail in parent context.
-When 3+ files need inspection, review, or cross-file diagnosis, split the work across trailing review /subagent calls instead of a long /read batch.
+Default to review /subagent for inspection, tracing, comparison, and large-file reading. Do not wait until the task is already large.
+Parent /read is for files you will edit next, not for surveying unknown code.
+Do not use implement /subagent for a 1-2 file patch the parent can apply after a review summary; keep those writes on the parent.
+When several areas must be surveyed, split trailing review /subagent calls instead of a long parent /read batch.
 All review /subagent calls in one trailing batch run in parallel; implement subagents run sequentially.
 
 What each subagent receives (tailor dispatch to this):
@@ -307,10 +308,10 @@ Tailoring rules:
 - Attach starting files in files; review subagents may /read neighbors as needed.
 - Paste short critical facts from parent /shell or prior findings into task; do not assume the subagent saw them.
 - Split parallel review batches by area (e.g. backend vs frontend), not duplicate overlapping file sets.
-- Prefer review subagents before parent /read when many files must be surveyed.
+- Prefer a review /subagent before parent /read whenever more than one file, or one large file, must be surveyed.
 
 Batch rules:
-- Emit 2-8 focused review /subagent calls in one trailing batch when work spans multiple areas.
+- Emit 1-8 focused review /subagent calls in one trailing batch; use several when work spans multiple areas.
 - /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
 - In mixed batches, all review subagents run in parallel first, then implement subagents run one at a time.
@@ -340,8 +341,8 @@ Rules:
 - Do not output explanations.
 - Do not wrap JSON in code fences.
 - Do not read unnecessary files if metadata / task already provides enough information
-- minimize iterations by request_feedback, read all necessary files at once instead of multiple iterations
-- for broad exploration or review across many files, prefer trailing review /subagent calls over parent /read of every path
+- minimize iterations by request_feedback; for survey work prefer trailing review /subagent calls in one turn instead of a parent /read batch
+- for exploration, review, tracing, or large-file inspection, prefer trailing review /subagent calls over parent /read
 - verification tests are not necessary unless explicitly prompted.
 </system>
 
@@ -485,10 +486,11 @@ Rules:
 
 {subagent_output_rules}
 <delegation_rules>
-- Subagents are the preferred way to inspect or review many files without bloating parent context.
-- When a task spans multiple modules or needs cross-file diagnosis, delegate survey work to review subagents first.
-- Keep parent turns for synthesis, edits, validation, and decisions; push file-heavy reading into subagents.
+- Review /subagent is the default for inspection. Use it even when you expect to edit only one or two files later.
+- When a task spans multiple modules or needs cross-file diagnosis, emit a trailing review /subagent batch first.
+- Keep parent turns for synthesis, small edits, validation, and decisions; push file-heavy reading into subagents.
 - After subagent summaries return, /read only the few files you must edit directly.
+- Use implement /subagent only for a bounded write that would otherwise bloat the parent turn, typically 3+ files or an isolated patch.
 - Subagents are context-isolated: put needed file paths in files and needed facts/constraints/deliverables in task.
 - For review subagents, files is the starting context; they may /read additional paths.
 </delegation_rules>
@@ -498,7 +500,7 @@ Rules:
 - Do not stop after only partial completion.
 - If the task asks to create/write/modify and run/validate, include both file mutation and /shell validation.
 - If information is needed before deciding, inspect first and use /request_feedback.
-- For multi-file investigation, prefer trailing review /subagent calls over reading every file in the parent turn.
+- For investigation, prefer trailing review /subagent calls over reading every file in the parent turn.
 - For simple direct creation tasks, do not inspect directories first unless necessary.
 - If build/test validation fails, do not hide failure with || true.
 </task_completion_rules>

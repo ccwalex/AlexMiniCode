@@ -317,6 +317,8 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("review role", parent_prompt)
         self.assertIn("implement role", parent_prompt)
         self.assertIn("Subagents are context-isolated", parent_prompt)
+        self.assertIn("Review /subagent is the default for inspection", parent_prompt)
+        self.assertNotIn("modify less than 3 files", parent_prompt)
 
     def test_per_job_role_overrides_apply_to_subagent_roles(self):
         with role_override_scope(
