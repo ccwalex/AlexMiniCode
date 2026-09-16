@@ -738,14 +738,25 @@ def job_progress(jid):
         text=steps_path.read_text(encoding='utf-8',errors='replace')
     events=parse_steps_jsonl(text, max_lines=2000)
     snap=build_snapshot(events)
-    active_batch_id=None
     batches=snap.get('batches') or {}
+    settled={'done','failed','request_feedback','completed'}
+    active_batch_id=None
+    active_ts=''
     for batch_id, batch in batches.items():
         status=str((batch or {}).get('status') or '')
-        if status not in {'done','failed','request_feedback'}:
+        ts=str((batch or {}).get('ts') or '')
+        if status in settled:
+            continue
+        if active_batch_id is None or ts>=active_ts:
             active_batch_id=batch_id
+            active_ts=ts
     if active_batch_id is None and batches:
-        active_batch_id=list(batches.keys())[-1]
+        last_ts=''
+        for batch_id, batch in batches.items():
+            ts=str((batch or {}).get('ts') or '')
+            if not last_ts or ts>=last_ts:
+                active_batch_id=batch_id
+                last_ts=ts
     return {
         'job_id':safe_job_id(jid),
         'snapshot':snap.get('snapshot') or [],

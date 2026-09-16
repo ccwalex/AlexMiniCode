@@ -198,6 +198,9 @@ def _run_process(task, role, files, timeout_seconds):
         env = os.environ.copy()
         env["AGENT_SUBAGENT_DEPTH"] = "1"
         env["AGENT_SUBAGENT_ROLE"] = role
+        # Child stdout is captured separately; do not let the worker rewrite
+        # the parent job's steps.jsonl or rewritten_task.txt.
+        env.pop("GEN2_JOB_DIR", None)
         command = [
             sys.executable,
             "-u",

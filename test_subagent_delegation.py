@@ -195,7 +195,9 @@ class SubagentDelegationTests(unittest.TestCase):
             captured.update(kwargs)
             return FakeProcess(command)
 
-        with patch.object(runner.subprocess, "Popen", side_effect=fake_popen):
+        with patch.dict(os.environ, {"GEN2_JOB_DIR": "/tmp/parent-job"}), patch.object(
+            runner.subprocess, "Popen", side_effect=fake_popen
+        ):
             result = runner.run_subagent(
                 "Implement one change",
                 role="implement",
@@ -208,6 +210,7 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertNotIn("read_cache", result)
         self.assertEqual(captured["env"]["AGENT_SUBAGENT_DEPTH"], "1")
         self.assertEqual(captured["env"]["AGENT_SUBAGENT_ROLE"], "implement")
+        self.assertNotIn("GEN2_JOB_DIR", captured["env"])
         self.assertTrue(captured["start_new_session"])
 
     def test_process_timeout_terminates_child_process_group(self):
