@@ -405,6 +405,40 @@ Stop the current job and clear all queued jobs.
 curl -s -X POST http://127.0.0.1:7860/api/stop_all_jobs
 ```
 
+### `POST /api/cancel_queued_jobs`
+
+Cancel specific queued jobs without stopping the currently running job.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/cancel_queued_jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"job_ids": ["job_20260101_120000_abc12345", "job_20260101_120100_def67890"]}'
+```
+
+Request body:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `job_ids` | string[] | yes | Job IDs currently in the queue to cancel |
+
+Jobs that are not in the queue or are currently running are returned in `skipped`.
+
+### `POST /api/clear_completed_jobs`
+
+Delete all terminal jobs (`completed`, `failed`, `cancelled`) that are not running and not queued. Removes each job directory, including logs and metadata.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/clear_completed_jobs
+```
+
+### `POST /api/shutdown`
+
+Stop all jobs, then shut down the Gen2 web GUI server process.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/shutdown
+```
+
 ### `POST /api/restart_current_job`
 
 Stop the current job, recreate it from the same config, and start it again.
@@ -658,6 +692,9 @@ Notes:
 | GET | `/api/registry_contexts` | List registry contexts |
 | POST | `/api/stop_current_job` | Stop running job |
 | POST | `/api/stop_all_jobs` | Stop all and clear queue |
+| POST | `/api/cancel_queued_jobs` | Cancel selected queued jobs |
+| POST | `/api/clear_completed_jobs` | Delete completed/failed/cancelled jobs |
+| POST | `/api/shutdown` | Stop all jobs and shut down server |
 | POST | `/api/restart_current_job` | Restart current job |
 | POST | `/api/restart_job` | Restart specific job |
 | POST | `/api/git` | Git helper actions |
