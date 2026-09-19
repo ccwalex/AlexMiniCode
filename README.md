@@ -14,6 +14,7 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
 - **Dual LLM backends** — OpenCode Go subscription (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
 - **Agent memory** — Persistent project context, plans, run history, and reasoning notes under `agent_memory/`.
+- **MCP HTTP gateway** — Optional Streamable-HTTP MCP server with real file download/upload and script tools for other agents/IDEs (`mcp_gateway/`, see [mcp_gateway/README.md](mcp_gateway/README.md)).
 
 ## Project layout
 
@@ -56,6 +57,10 @@ pip install requests
 
 # Optional: enable Cursor SDK backend
 pip install cursor-sdk
+
+# Optional: MCP HTTP gateway (file download/upload + run_script tools)
+pip install -r requirements-mcp.txt
+# See mcp_gateway/README.md
 ```
 
 Set your OpenCode API key for the default backend:

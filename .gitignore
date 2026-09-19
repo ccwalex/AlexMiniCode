@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv-mcp/
 venv/
 env/
 
