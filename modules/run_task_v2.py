@@ -629,7 +629,7 @@ def _run_task_v2(
                 if not error and isinstance(failed_result, dict):
                     error = str(failed_result.get("error") or "").strip()
                 reason = f"Subagent execution failed: {error or 'API call failed'}"
-                print("\n[Subagent] Skipping debug repair; returning failure to parent")
+                print("\n[Subagent] Skipping in-process debug; returning failure for peer repair")
                 print(f"[Subagent] {reason}")
 
                 _add_error(

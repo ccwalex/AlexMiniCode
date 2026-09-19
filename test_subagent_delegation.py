@@ -254,7 +254,7 @@ class SubagentDelegationTests(unittest.TestCase):
                 )
                 return 0
 
-        with patch.object(
+        with patch.object(runner, "_max_subagent_repair_loops", return_value=1), patch.object(
             runner.subprocess,
             "Popen",
             side_effect=lambda command, **kwargs: EmptySummaryProcess(command),
@@ -274,6 +274,81 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "rejected")
         popen.assert_not_called()
+
+    def test_peer_repair_retries_after_failure_then_succeeds(self):
+        fail_result = {
+            "success": False,
+            "role": "review",
+            "status": "failed",
+            "summary": "Could not complete review",
+            "artifacts": [],
+            "error": "shell command failed",
+        }
+        success_result = {
+            "success": True,
+            "role": "review",
+            "status": "done",
+            "summary": "Found the call site",
+            "artifacts": [],
+        }
+        calls = []
+
+        def fake_run_process(task, role, files, timeout_seconds):
+            calls.append({"task": task, "role": role})
+            if len(calls) == 1:
+                return fail_result
+            return success_result
+
+        with patch.object(runner, "_run_process", side_effect=fake_run_process):
+            result = runner.run_subagent("Inspect parser", role="review")
+
+        self.assertTrue(result["success"], result)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["role"], "review")
+        self.assertEqual(calls[1]["role"], "review")
+        self.assertEqual(calls[0]["task"], "Inspect parser")
+        self.assertIn("<prior_subagent_failure>", calls[1]["task"])
+        self.assertIn("shell command failed", calls[1]["task"])
+
+    def test_peer_repair_stops_at_max_loops(self):
+        fail_result = {
+            "success": False,
+            "role": "implement",
+            "status": "failed",
+            "summary": "still broken",
+            "artifacts": [],
+            "error": "write failed",
+        }
+        with patch.object(runner, "_max_subagent_repair_loops", return_value=10), patch.object(
+            runner, "_run_process", return_value=fail_result
+        ) as run_process:
+            result = runner.run_subagent("Implement fix", role="implement")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(run_process.call_count, 10)
+        self.assertEqual(result["error"], "write failed")
+
+    def test_peer_repair_does_not_retry_on_timeout(self):
+        timeout_result = {
+            "success": False,
+            "role": "review",
+            "status": "timed_out",
+            "summary": "",
+            "artifacts": [],
+            "error": "subagent timed out after 1s",
+        }
+        with patch.object(runner, "_run_process", return_value=timeout_result) as run_process:
+            result = runner.run_subagent("Slow task", role="review", timeout_seconds=1)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "timed_out")
+        run_process.assert_called_once()
+
+    def test_peer_repair_does_not_retry_on_rejected(self):
+        with patch.object(runner, "_run_process") as run_process:
+            result = runner.run_subagent("", role="review")
+        self.assertEqual(result["status"], "rejected")
+        run_process.assert_not_called()
 
     def test_subagent_roles_exist_and_child_prompt_hides_delegation(self):
         for role in ("subagent_review", "subagent_implement"):
