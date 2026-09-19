@@ -223,6 +223,7 @@ Use it to preserve:
 - partial plans
 - file/path findings
 - constraints discovered during the task
+- DO NOT COPY TASK TO SCRATCHPAD.
 
 The scratchpad is NOT persisted to disk and is cleared when the task ends.
 """.strip()
