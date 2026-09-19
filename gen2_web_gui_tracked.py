@@ -17,6 +17,16 @@ def source_dir(): return Path(__file__).resolve().parent
 def project_root(): return source_dir().parent
 def modules_dir(): return source_dir()/'modules'
 def worker_script(): return source_dir()/'run_gen2_job_worker.py'
+def mcp_gateway_script(): return source_dir()/'run_mcp_gateway.py'
+def mcp_gateway_log():
+    candidates=(jobs_dir()/'mcp_gateway.log', source_dir()/'mcp_gateway.log')
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True,exist_ok=True)
+            with open(candidate,'a',encoding='utf-8'): pass
+            return candidate
+        except Exception: continue
+    return source_dir()/'mcp_gateway.log'
 def memory_dir(): return project_root()/'agent_memory'
 def jobs_dir(): return memory_dir()/'jobs'
 def queue_file(): return jobs_dir()/'queue.json'
@@ -1234,12 +1244,52 @@ class Handler(BaseHTTPRequestHandler):
             return jresp(self,{'error':'not found'},404)
         except Exception as e: return jresp(self,{'success':False,'error':str(e)},500)
     def log_message(self,fmt,*args): sys.stderr.write('[%s] %s\n'%(self.log_date_time_string(),fmt%args))
-def run_server(host='127.0.0.1',port=7860):
-    os.chdir(project_root()); ensure_storage(); srv=ThreadingHTTPServer((host,port),Handler)
+def start_mcp_gateway():
+    script=mcp_gateway_script()
+    if not script.exists():
+        print(f'WARNING: MCP gateway not found: {script}',file=sys.stderr); return None
+    root=project_root()
+    jupyter_public_host=os.environ.get('JUPYTER_PUBLIC_HOST','100.125.87.90')
+    jupyter_public_port=os.environ.get('JUPYTER_PUBLIC_PORT','7192')
+    gateway_port=str(os.environ.get('MCP_GATEWAY_PORT','7890'))
+    public_base=f'http://{jupyter_public_host}:{jupyter_public_port}/proxy/{gateway_port}'
+    log_path=mcp_gateway_log(); log_path.parent.mkdir(parents=True,exist_ok=True)
+    cmd=[sys.executable,'-u',str(script),'--jupyter','--root',str(root),'--host','127.0.0.1','--port',gateway_port,'--public-base',public_base]
+    env=os.environ.copy(); env.setdefault('MCP_GATEWAY_ROOT',str(root))
+    try: logf=open(log_path,'a',encoding='utf-8')
+    except Exception as e:
+        print(f'WARNING: MCP gateway log unavailable ({log_path}): {e}',file=sys.stderr); logf=subprocess.DEVNULL
+    p=subprocess.Popen(cmd,cwd=str(source_dir()),env=env,stdout=logf,stderr=subprocess.STDOUT,start_new_session=True)
+    time.sleep(0.3)
+    if p.poll() is not None:
+        print(f'WARNING: MCP gateway exited early (see {log_path})',file=sys.stderr); return None
+    print(f'MCP gateway started on 127.0.0.1:{gateway_port} (Jupyter proxy: {public_base}/mcp)')
+    print(f'MCP gateway log: {log_path}')
+    return p
+def stop_mcp_gateway(proc):
+    if proc is None: return
+    pid=proc.pid
+    if not alive(pid): return
+    try: os.killpg(os.getpgid(pid),signal.SIGTERM)
+    except Exception:
+        try: proc.terminate()
+        except Exception: pass
+    try: proc.wait(timeout=3)
+    except Exception:
+        try: os.killpg(os.getpgid(pid),signal.SIGKILL)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+def run_server(host='127.0.0.1',port=7860,start_mcp=True):
+    os.chdir(project_root()); ensure_storage()
+    mcp_proc=start_mcp_gateway() if start_mcp else None
+    srv=ThreadingHTTPServer((host,port),Handler)
     print(f'Gen2 web GUI serving at http://{host}:{port}/'); print(f'Project root: {project_root()}'); print(f'Source dir: {source_dir()}'); print(f'Worker: {worker_script()}'); print(f'JupyterLab proxy: <base>/proxy/{port}/')
     try: srv.serve_forever()
     except KeyboardInterrupt: print('\nStopping Gen2 web GUI.')
-    finally: srv.server_close()
+    finally:
+        stop_mcp_gateway(mcp_proc)
+        srv.server_close()
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--host',default='127.0.0.1'); ap.add_argument('--port',type=int,default=7860); a=ap.parse_args(); run_server(a.host,a.port)
+    ap=argparse.ArgumentParser(); ap.add_argument('--host',default='127.0.0.1'); ap.add_argument('--port',type=int,default=7860); ap.add_argument('--no-mcp-gateway',action='store_true',help='Do not start the Jupyter MCP gateway alongside the web GUI'); a=ap.parse_args(); run_server(a.host,a.port,start_mcp=not a.no_mcp_gateway)
 if __name__=='__main__': main()

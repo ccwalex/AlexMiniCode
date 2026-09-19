@@ -40,6 +40,28 @@ def build_public_base_url(host: str, port: int, public_base: str | None) -> str:
     return f"http://{display_host}:{port}"
 
 
+def build_download_url(
+    base_url: str,
+    rel_path: str,
+    url_auth_query: str | None = None,
+) -> str:
+    """Build a public download URL, optionally appending auth query params.
+
+    ``url_auth_query`` is useful behind Jupyter's ``/proxy/<port>/`` where
+    clients that fetch the URL directly (not via MCP headers) still need the
+    Jupyter token, e.g. ``token=<jupyter-token>``.
+    """
+    params = {"path": rel_path}
+    if url_auth_query:
+        for part in url_auth_query.split("&"):
+            if not part or "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key:
+                params[key] = value
+    return f"{base_url.rstrip('/')}/download?{urlencode(params)}"
+
+
 def create_gateway(
     *,
     root: Path,
@@ -47,6 +69,7 @@ def create_gateway(
     port: int = DEFAULT_PORT,
     token: str | None = None,
     public_base: str | None = None,
+    url_auth_query: str | None = None,
 ) -> FastMCP:
     """Create a configured FastMCP server with thin tools + file routes."""
     root = root.resolve()
@@ -91,7 +114,7 @@ def create_gateway(
         if not full.is_file():
             return {"ok": False, "error": f"file not found: {path}"}
         rel = relpath_under_root(root, full)
-        url = f"{base_url}/download?{urlencode({'path': rel})}"
+        url = build_download_url(base_url, rel, url_auth_query)
         return {"ok": True, "path": rel, "url": url}
 
     @mcp.tool()
@@ -233,6 +256,7 @@ def run_server(
     port: int = DEFAULT_PORT,
     token: str | None = None,
     public_base: str | None = None,
+    url_auth_query: str | None = None,
 ) -> None:
     """Build and serve the gateway over Streamable HTTP."""
     root = (root or default_project_root()).resolve()
@@ -242,6 +266,7 @@ def run_server(
         port=port,
         token=token,
         public_base=public_base,
+        url_auth_query=url_auth_query,
     )
     app = create_asgi_app(mcp)
     print(
@@ -284,6 +309,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("MCP_GATEWAY_PUBLIC_BASE"),
         help="Public base URL used in get_download_url (e.g. http://host:8765)",
     )
+    parser.add_argument(
+        "--url-auth-query",
+        default=os.environ.get("MCP_GATEWAY_URL_AUTH_QUERY"),
+        help=(
+            "Extra query string appended to get_download_url results "
+            "(e.g. token=<jupyter-token> for Jupyter /proxy/ access)"
+        ),
+    )
+    parser.add_argument(
+        "--jupyter",
+        action="store_true",
+        help=(
+            "Preset for Jupyter /proxy/<port>/ inside Docker: bind 127.0.0.1, "
+            "default port 7890, warn if MCP_GATEWAY_TOKEN is set"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -293,7 +334,35 @@ def main(argv: list[str] | None = None) -> None:
     if root is None:
         env_root = os.environ.get("MCP_GATEWAY_ROOT")
         root = Path(env_root) if env_root else default_project_root()
-    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.token:
+
+    host = args.host
+    port = args.port
+    token = args.token
+    public_base = args.public_base
+    url_auth_query = args.url_auth_query
+
+    if args.jupyter:
+        if host == DEFAULT_HOST and os.environ.get("MCP_GATEWAY_HOST") is None:
+            host = "127.0.0.1"
+        if port == DEFAULT_PORT and os.environ.get("MCP_GATEWAY_PORT") is None:
+            port = 7890
+        if token:
+            print(
+                "WARNING: --jupyter mode: omit MCP_GATEWAY_TOKEN; Jupyter "
+                "proxy auth is the outer boundary.",
+                file=sys.stderr,
+            )
+        if not public_base:
+            print(
+                "WARNING: --jupyter requires --public-base, e.g. "
+                "http://<host>:7192/proxy/7890",
+                file=sys.stderr,
+            )
+        jupyter_token = os.environ.get("JUPYTER_TOKEN") or os.environ.get("JUPYTERHUB_API_TOKEN")
+        if jupyter_token and not url_auth_query:
+            url_auth_query = f"token={jupyter_token}"
+
+    if host not in ("127.0.0.1", "localhost", "::1") and not token:
         print(
             "WARNING: binding non-loopback without --token / MCP_GATEWAY_TOKEN "
             "is unsafe.",
@@ -301,10 +370,11 @@ def main(argv: list[str] | None = None) -> None:
         )
     run_server(
         root=root,
-        host=args.host,
-        port=args.port,
-        token=args.token,
-        public_base=args.public_base,
+        host=host,
+        port=port,
+        token=token,
+        public_base=public_base,
+        url_auth_query=url_auth_query,
     )
 
 

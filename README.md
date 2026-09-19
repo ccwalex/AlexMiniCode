@@ -94,6 +94,7 @@ print(result["success"], result["status"], result["reason"])
 
 ```bash
 python agent/gen2_web_gui_tracked.py --host 127.0.0.1 --port 7860
+# Also starts the Jupyter MCP gateway on port 7890 (use --no-mcp-gateway to skip)
 ```
 
 Open [http://127.0.0.1:7860/](http://127.0.0.1:7860/) in a browser to submit tasks, browse the file tree, and inspect job logs.
