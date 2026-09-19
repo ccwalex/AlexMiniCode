@@ -5,6 +5,7 @@ Cursor SDK chat-only LLM calls for Gen2 agent roles.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from cfg import CFG
 from cursor_model_selection import (
@@ -34,6 +35,8 @@ MODULE_METADATA = {
         }
     ],
 }
+
+_AGENT_HANDLES: dict[str, Any] = {}
 
 
 def _messages_to_prompt(messages) -> str:
@@ -136,15 +139,22 @@ def _build_cursor_model(model, cursor_params=None, *, force_params=None):
     return build_cursor_model_value(model_id, selection.get("params")), params
 
 
-def _run_cursor_prompt(prompt, model_value, api_key, cwd):
-    from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
+def _cursor_api_key() -> str:
+    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("CURSOR_API_KEY environment variable is not set")
+    return api_key
+
+
+def _build_agent_options(model_value, api_key, cwd):
+    from cursor_sdk import AgentOptions, LocalAgentOptions
 
     local_opts = LocalAgentOptions(
         cwd=cwd,
         setting_sources=[],
     )
 
-    options = AgentOptions(
+    return AgentOptions(
         api_key=api_key,
         model=model_value,
         local=local_opts,
@@ -153,7 +163,184 @@ def _run_cursor_prompt(prompt, model_value, api_key, cwd):
         tools=[],
     )
 
+
+def _run_cursor_prompt(prompt, model_value, api_key, cwd):
+    from cursor_sdk import Agent
+
+    options = _build_agent_options(model_value, api_key, cwd)
     return Agent.prompt(prompt, options)
+
+
+def _cursor_response_dict(text: str, model_id: str, used_params, *, agent_id=None) -> dict:
+    payload = {
+        "content": text,
+        "source": "cursor",
+        "model": model_id,
+        "cursor_params": used_params,
+    }
+    if agent_id:
+        payload["agent_id"] = agent_id
+    return payload
+
+
+def _send_agent_message(agent, message: str):
+    run = agent.send(message)
+    result = run.wait()
+    if getattr(result, "status", None) == "error":
+        raise RuntimeError(f"Cursor SDK run failed: {_extract_cursor_text(result)}")
+    text = _extract_cursor_text(result)
+    if not text.strip():
+        text = _extract_cursor_text(getattr(run, "result", None))
+    return text
+
+
+def _resolve_cursor_model(model, cursor_params=None, *, force_params=None):
+    selection = parse_model_selection(model, cursor_params)
+    model_id = selection["id"]
+    model_value, used_params = _build_cursor_model(
+        model_id,
+        selection.get("params"),
+        force_params=force_params,
+    )
+    return model_id, model_value, used_params
+
+
+def _run_with_model_param_attempts(model, cursor_params, runner):
+    selection = parse_model_selection(model, cursor_params)
+    model_id = selection["id"]
+    errors = []
+
+    for params in _cursor_model_attempts(model_id, selection.get("params")):
+        try:
+            return runner(model_id, params)
+        except Exception as exc:
+            errors.append(f"params={params or 'none'}: {exc}")
+            if params and _is_cursor_param_error(exc):
+                continue
+            raise
+
+    raise RuntimeError(
+        "Cursor SDK run failed for all model parameter attempts: "
+        + " | ".join(errors)
+    )
+
+
+def _register_agent_handle(agent) -> str:
+    agent_id = str(getattr(agent, "agent_id", "") or getattr(agent, "agentId", "") or "").strip()
+    if not agent_id:
+        raise RuntimeError("Cursor SDK agent did not return an agent id")
+    _AGENT_HANDLES[agent_id] = agent
+    return agent_id
+
+
+def _get_cached_agent(agent_id: str):
+    return _AGENT_HANDLES.get(str(agent_id or "").strip())
+
+
+def _close_agent_handle(agent_id: str) -> None:
+    agent_id = str(agent_id or "").strip()
+    if not agent_id:
+        return
+    agent = _AGENT_HANDLES.pop(agent_id, None)
+    if agent is None:
+        return
+    close = getattr(agent, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _get_or_resume_agent(agent_id: str, model_value, api_key, cwd):
+    agent = _get_cached_agent(agent_id)
+    if agent is not None:
+        return agent
+
+    from cursor_sdk import Agent
+
+    options = _build_agent_options(model_value, api_key, cwd)
+    agent = Agent.resume(agent_id, options)
+    _register_agent_handle(agent)
+    return agent
+
+
+def bootstrap_cursor_conversation(
+    messages,
+    model,
+    thinking="medium",
+    max_tokens=8192,
+    timeout=None,
+    cursor_params=None,
+):
+    del thinking, max_tokens, timeout
+
+    prompt = _messages_to_prompt(messages)
+    if not prompt:
+        raise ValueError("messages must contain at least one non-empty prompt")
+
+    api_key = _cursor_api_key()
+    cwd = safe_path(".")
+
+    def _bootstrap(model_id, params):
+        resolved_id, model_value, used_params = _resolve_cursor_model(
+            model_id,
+            cursor_params,
+            force_params=params,
+        )
+
+        from cursor_sdk import Agent
+
+        options = _build_agent_options(model_value, api_key, cwd)
+        agent = Agent.create(
+            api_key=options.api_key,
+            model=options.model,
+            local=options.local,
+            tools=options.tools,
+        )
+        agent_id = _register_agent_handle(agent)
+        text = _send_agent_message(agent, prompt)
+        return _cursor_response_dict(text, resolved_id, used_params, agent_id=agent_id)
+
+    return _run_with_model_param_attempts(model, cursor_params, _bootstrap)
+
+
+def continue_cursor_conversation(
+    agent_id,
+    message,
+    model,
+    thinking="medium",
+    max_tokens=8192,
+    timeout=None,
+    cursor_params=None,
+):
+    del thinking, max_tokens, timeout
+
+    agent_id = str(agent_id or "").strip()
+    message = str(message or "").strip()
+    if not agent_id:
+        raise ValueError("agent_id is required")
+    if not message:
+        raise ValueError("message must be non-empty")
+
+    api_key = _cursor_api_key()
+    cwd = safe_path(".")
+
+    def _continue(model_id, params):
+        resolved_id, model_value, used_params = _resolve_cursor_model(
+            model_id,
+            cursor_params,
+            force_params=params,
+        )
+        agent = _get_or_resume_agent(agent_id, model_value, api_key, cwd)
+        text = _send_agent_message(agent, message)
+        return _cursor_response_dict(text, resolved_id, used_params, agent_id=agent_id)
+
+    return _run_with_model_param_attempts(model, cursor_params, _continue)
+
+
+def close_cursor_conversation(agent_id) -> None:
+    _close_agent_handle(agent_id)
 
 
 def call_llm_cursor(
