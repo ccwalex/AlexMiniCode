@@ -208,6 +208,10 @@ Return only JSON with approved and reason.
     }
 
 
+def _verify_mode(llm_used):
+    return "llm" if llm_used else "deterministic"
+
+
 def verify_edit(
     path,
     original_source,
@@ -230,6 +234,7 @@ def verify_edit(
             "approved": False,
             "reason": "Path must be a non-empty string.",
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(False),
         }
 
     if not isinstance(reconstructed_source, str) or not reconstructed_source.strip():
@@ -237,6 +242,7 @@ def verify_edit(
             "approved": False,
             "reason": "Reconstructed source is empty.",
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(False),
         }
 
     if original_source is None:
@@ -250,6 +256,7 @@ def verify_edit(
             "approved": False,
             "reason": "Reconstructed source is identical to original source.",
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(False),
         }
 
     c_type = str(code_type or "").lower().strip()
@@ -265,6 +272,7 @@ def verify_edit(
                 "reason": det.get("reason", "Deterministic code check failed."),
                 "content": reconstructed_source,
                 "checker_status": det.get("status"),
+                "verify_mode": _verify_mode(False),
             }
     else:
         det = {"approved": True, "escalate": False, "status": "skipped"}
@@ -275,6 +283,7 @@ def verify_edit(
             "approved": True,
             "reason": "Passed deterministic content verification.",
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(False),
         }
 
     try:
@@ -295,17 +304,20 @@ def verify_edit(
                     ),
                     "content": reconstructed_source,
                     "checker_status": det.get("status"),
+                    "verify_mode": _verify_mode(True),
                 }
             return {
                 "approved": True,
                 "reason": "Passed deterministic verification; LLM verifier returned non-dict response, so not blocking edit.",
                 "content": reconstructed_source,
+                "verify_mode": _verify_mode(False),
             }
 
         return {
             "approved": bool(llm_res.get("approved", not force_llm)),
             "reason": str(llm_res.get("reason", "LLM verifier returned no reason.")),
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(True),
         }
 
     except Exception as e:
@@ -318,11 +330,13 @@ def verify_edit(
                 ),
                 "content": reconstructed_source,
                 "checker_status": det.get("status"),
+                "verify_mode": _verify_mode(True),
             }
         return {
             "approved": True,
             "reason": f"Passed deterministic verification; LLM verifier failed non-fatally: {e}",
             "content": reconstructed_source,
+            "verify_mode": _verify_mode(False),
         }
 
 

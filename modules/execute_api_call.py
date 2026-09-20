@@ -185,11 +185,32 @@ def _record_cache_drop(run_state, dropped, missing, remaining):
         )
 
 
-def _progress_substep(batch_id, step_index, call, phase, status, detail=""):
+def _verify_mode_from_result(v_res):
+    if not isinstance(v_res, dict):
+        return ""
+    mode = str(v_res.get("verify_mode") or "").strip().lower()
+    if mode in {"deterministic", "llm"}:
+        return mode
+    if v_res.get("llm_used") is True:
+        return "llm"
+    if v_res.get("llm_used") is False:
+        return "deterministic"
+    return ""
+
+
+def _progress_substep(batch_id, step_index, call, phase, status, detail="", verify_mode=""):
     if not batch_id or step_index is None:
         return
     try:
-        emit_substep(batch_id, step_index, call, phase, status, detail)
+        emit_substep(
+            batch_id,
+            step_index,
+            call,
+            phase,
+            status,
+            detail,
+            verify_mode=verify_mode,
+        )
     except Exception:
         pass
 
@@ -316,6 +337,7 @@ def execute_api_call(
                 "verifying",
                 "done" if isinstance(v_res, dict) and v_res.get("approved") else "failed",
                 path,
+                verify_mode=_verify_mode_from_result(v_res),
             )
 
             _record_verifier_decision(run_state, "write", path, v_res)
@@ -386,6 +408,16 @@ def execute_api_call(
 
             if repair_attempt:
                 _progress_substep(batch_id, step_index, call, "repairing", "done", path)
+                if isinstance(v_res, dict) and v_res.get("approved"):
+                    _progress_substep(
+                        batch_id,
+                        step_index,
+                        call,
+                        "verifying",
+                        "done",
+                        path,
+                        verify_mode=_verify_mode_from_result(v_res),
+                    )
 
             verified_content = v_res.get(
                 "content",
@@ -519,12 +551,28 @@ def execute_api_call(
             )
 
             if not edit_success:
-                _progress_substep(batch_id, step_index, call, "verifying", "failed", path)
+                _progress_substep(
+                    batch_id,
+                    step_index,
+                    call,
+                    "verifying",
+                    "failed",
+                    path,
+                    verify_mode=_verify_mode_from_result(edit_res),
+                )
                 result["error"] = edit_reason
                 result["output"] = edit_res
                 return result
 
-            _progress_substep(batch_id, step_index, call, "verifying", "done", path)
+            _progress_substep(
+                batch_id,
+                step_index,
+                call,
+                "verifying",
+                "done",
+                path,
+                verify_mode=_verify_mode_from_result(edit_res),
+            )
 
             if "reconstructed_source" in edit_res and edit_res["reconstructed_source"] is not None:
                 read_cache[path] = edit_res["reconstructed_source"]

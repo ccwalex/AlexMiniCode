@@ -241,25 +241,35 @@ def emit_dependency_substep(
     )
 
 
-def emit_substep(batch_id: str, index: int, call, phase: str, status: str, detail: str = ""):
+def emit_substep(
+    batch_id: str,
+    index: int,
+    call,
+    phase: str,
+    status: str,
+    detail: str = "",
+    verify_mode: str = "",
+):
     if not isinstance(call, dict):
         call = {}
     step_id = f"{batch_id}:{index}:{phase}"
     base_detail = detail or detail_for_call(call)
-    emit(
-        {
-            "event": "substep",
-            "batch_id": batch_id,
-            "step_id": step_id,
-            "index": index,
-            "status": status,
-            "action": phase,
-            "url": call.get("url"),
-            "label": f"{phase} {base_detail}".strip(),
-            "detail": base_detail,
-            "phase": phase,
-        }
-    )
+    payload = {
+        "event": "substep",
+        "batch_id": batch_id,
+        "step_id": step_id,
+        "index": index,
+        "status": status,
+        "action": phase,
+        "url": call.get("url"),
+        "label": f"{phase} {base_detail}".strip(),
+        "detail": base_detail,
+        "phase": phase,
+    }
+    mode = str(verify_mode or "").strip().lower()
+    if mode in {"deterministic", "llm"}:
+        payload["verify_mode"] = mode
+    emit(payload)
 
 
 def log_step(message: str):

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Gen2 Agent</title>
 <style>
-:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a;--progress-dependency:#f4f6f8}
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a;--progress-dependency:#f4f6f8;--progress-verify-deterministic:#62a8ff}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui}
 .topbar{display:flex;align-items:center;gap:12px;padding:12px 12px 0}
 .topbar h1{margin:0;font-size:20px}
@@ -41,6 +41,7 @@ button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;bord
 .badge-done{background:var(--good)}
 .badge-meta{background:var(--good)}
 .badge-dependency{background:var(--progress-dependency)}
+.badge-verify-deterministic{background:var(--progress-verify-deterministic)}
 .badge-failed{background:var(--bad)}
 .step-detail{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .logs{height:calc(100vh - 460px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
@@ -919,9 +920,12 @@ planProgressEl.addEventListener('scroll',()=>{const el=planProgressEl;progressUs
 function progressBadgeClass(row){
   const status=String(row.status||'');
   const phase=String(row.phase||'');
+  const verifyMode=String(row.verify_mode||'');
   if(phase==='writing_meta') return status==='done'?'badge-meta':'badge-meta';
   if(phase==='dependency') return status==='failed'?'badge-failed':'badge-dependency';
   if(['failed','timeout'].includes(status)) return 'badge-failed';
+  if(phase==='verifying'&&verifyMode==='deterministic') return 'badge-verify-deterministic';
+  if(phase==='verifying'&&verifyMode==='llm') return 'badge-running';
   if(['done','skipped'].includes(status)) return 'badge-done';
   if(['running','started','verifying','repairing','shell'].includes(status)||['verifying','repairing','shell'].includes(phase)) return 'badge-running';
   return 'badge-planned';

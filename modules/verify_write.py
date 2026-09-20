@@ -52,6 +52,10 @@ def _llm_verify_write(path, content, modules_override=None):
     )
 
 
+def _verify_mode(llm_used):
+    return "llm" if llm_used else "deterministic"
+
+
 def _parse_llm_write_decision(resp, content, content_hash, metadata):
     if isinstance(resp, dict) and "approved" in resp:
         if not resp.get("approved", True):
@@ -61,6 +65,7 @@ def _parse_llm_write_decision(resp, content, content_hash, metadata):
                 "content": content,
                 "content_hash": content_hash,
                 "metadata": metadata,
+                "verify_mode": _verify_mode(True),
             }
         return None
 
@@ -73,6 +78,7 @@ def _parse_llm_write_decision(resp, content, content_hash, metadata):
                 "content": content,
                 "content_hash": content_hash,
                 "metadata": metadata,
+                "verify_mode": _verify_mode(True),
             }
     return None
 
@@ -84,7 +90,8 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
             "reason": "Path must be a non-empty string.",
             "content": content,
             "content_hash": None,
-            "metadata": None
+            "metadata": None,
+            "verify_mode": _verify_mode(False),
         }
     
     if not isinstance(content, str) or not content.strip():
@@ -93,7 +100,8 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
             "reason": "Content must be a non-empty string.",
             "content": content,
             "content_hash": None,
-            "metadata": None
+            "metadata": None,
+            "verify_mode": _verify_mode(False),
         }
     
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -108,10 +116,13 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
             "content_hash": content_hash,
             "metadata": metadata,
             "checker_status": det.get("status"),
+            "verify_mode": _verify_mode(False),
         }
 
     force_llm = bool(det.get("escalate")) or det.get("status") == "uncovered"
+    llm_used = False
     if use_llm or force_llm:
+        llm_used = True
         try:
             resp = _llm_verify_write(path, content, modules_override=modules_override)
             rejected = _parse_llm_write_decision(resp, content, content_hash, metadata)
@@ -129,14 +140,16 @@ def verify_write(path, content, modules_override=None, read_cache=None, use_llm=
                     "content_hash": content_hash,
                     "metadata": metadata,
                     "checker_status": det.get("status"),
+                    "verify_mode": _verify_mode(True),
                 }
             
     return {
         "approved": True,
-        "reason": "Passed all deterministic checks.",
+        "reason": "Passed all deterministic checks." if not llm_used else "Passed LLM verification.",
         "content": content,
         "content_hash": content_hash,
-        "metadata": metadata
+        "metadata": metadata,
+        "verify_mode": _verify_mode(llm_used),
     }
 
 if __name__ == "__main__":
