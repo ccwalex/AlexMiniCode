@@ -1,0 +1,6 @@
+api: pandas.Series.tolist
+kind: call
+accepts_nature:
+  - [Series]
+effects:
+  nature: List

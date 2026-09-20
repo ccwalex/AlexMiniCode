@@ -1,0 +1,5 @@
+api: sklearn.base.BaseEstimator.fit
+requires_nature:
+  - SklearnEstimator
+effects:
+  nature: SklearnEstimator

@@ -1,0 +1,5 @@
+api: fastapi.FastAPI.get
+requires_nature:
+  - FastAPIApp
+effects:
+  nature: Unknown

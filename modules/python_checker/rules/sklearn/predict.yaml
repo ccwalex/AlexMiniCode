@@ -1,0 +1,5 @@
+api: sklearn.base.BaseEstimator.predict
+requires_nature:
+  - SklearnEstimator
+effects:
+  nature: NdArray

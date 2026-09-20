@@ -1,0 +1,7 @@
+api: for_iter
+kind: for_iter
+forbids_nature:
+  - NdArray
+  - Tensor
+  - DataFrame
+  - Series

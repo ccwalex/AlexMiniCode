@@ -1,0 +1,5 @@
+api: pandas.DataFrame.groupby
+requires_nature:
+  - DataFrame
+effects:
+  nature: DataFrame

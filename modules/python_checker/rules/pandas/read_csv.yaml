@@ -1,0 +1,3 @@
+api: pandas.read_csv
+effects:
+  nature: DataFrame

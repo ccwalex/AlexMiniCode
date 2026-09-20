@@ -44,6 +44,7 @@ When you clone this repo, place its contents in `your-project/agent/`. Copy or i
 
 - Python 3.10+
 - [`requests`](https://pypi.org/project/requests/) — required for OpenCode LLM calls and the HTTP subagent client
+- [`PyYAML`](https://pypi.org/project/PyYAML/) and [`ruff`](https://pypi.org/project/ruff/) — required for vendored deterministic Python checking (`modules/python_checker/`)
 - [`cursor-sdk`](https://pypi.org/project/cursor-sdk/) — optional; required only when using the Cursor LLM backend
 
 ## Installation
@@ -53,7 +54,7 @@ When you clone this repo, place its contents in `your-project/agent/`. Copy or i
 git clone <repo-url> agent
 cd agent
 
-pip install requests
+pip install -r requirements.txt
 
 # Optional: enable Cursor SDK backend
 pip install cursor-sdk

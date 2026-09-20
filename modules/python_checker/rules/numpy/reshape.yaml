@@ -1,0 +1,5 @@
+api: numpy.reshape
+requires_nature:
+  - NdArray
+effects:
+  nature: NdArray

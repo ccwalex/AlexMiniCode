@@ -1,0 +1,3 @@
+api: sklearn.model_selection.train_test_split
+effects:
+  nature: NdArray

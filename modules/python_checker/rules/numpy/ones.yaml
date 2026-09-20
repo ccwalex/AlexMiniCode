@@ -1,0 +1,3 @@
+api: numpy.ones
+effects:
+  nature: NdArray

@@ -1,7 +1,7 @@
 MODULE_METADATA = {
     "name": "propagate_module_io_change",
     "type": "function",
-    "description": "After a tracked module's public output format changes, grep dependents and update them with implement subagents.",
+    "description": "After a tracked module's public I/O contract changes, grep dependents and apply limited call-site updates with escalate-to-main-loop support.",
     "functions": [
         {
             "name": "propagate_module_io_change",
@@ -30,6 +30,13 @@ MODULE_METADATA = {
             },
             "outputs": "list of cascade summary dicts",
         },
+        {
+            "name": "format_dependency_escalate_feedback",
+            "inputs": {
+                "escalations": "list of escalation dicts",
+            },
+            "outputs": "str feedback text for the main planner loop",
+        },
     ],
 }
 
@@ -37,18 +44,22 @@ import json
 import os
 import subprocess
 
-from extract_public_contract import extract_public_contract, output_format_changed
-from find_module_dependents import find_module_dependents
+from extract_public_contract import classify_io_delta, extract_public_contract
+from find_module_dependents import (
+    clear_dependents_cache,
+    find_module_dependents,
+    is_denied_dependency_path,
+)
 from infer_code_type import infer_code_type
 from is_tracked import is_tracked
+from limited_dependency_update import full_file_update_dependent, limited_update_dependent
 from read_file import read_file
 from refresh_after_file_change import refresh_after_file_change
-from opencode_session import universal_session
-from subagent_runner import run_subagent
 
 
 MAX_DEPTH = 3
 MAX_IMPLEMENT = 8
+MAX_LIMITED_EDITS_PER_FLUSH = 3
 
 
 def _subagent_depth():
@@ -80,12 +91,15 @@ def _merge_llm_stats(target, nested):
 
 
 def _role_progress_detail(role_name):
-    from model_config import get_role_config
+    try:
+        from model_config import get_role_config
 
-    cfg = get_role_config(role_name)
-    model = cfg.get("model") or "?"
-    source = cfg.get("source") or "?"
-    return f"{role_name} · {source} · {model}"
+        cfg = get_role_config(role_name)
+        model = cfg.get("model") or "?"
+        source = cfg.get("source") or "?"
+        return f"{role_name} · {source} · {model}"
+    except Exception:
+        return role_name
 
 
 def _emit_dependency_substep(batch_id, substep_id, status, action, label, detail=""):
@@ -115,56 +129,15 @@ def _maybe_start_parent_dependency(batch_id, path, progress_state):
     progress_state["llm_started"] = True
 
 
-def _llm_output_changed(path, pre_content, post_content, batch_id=None, progress_state=None):
-    substep_id = f"review:{path}"
-    role_name = "subagent_review"
-    detail = f"{path} · {_role_progress_detail(role_name)}"
-    _maybe_start_parent_dependency(batch_id, path, progress_state)
-    _emit_dependency_substep(
-        batch_id,
-        substep_id,
-        "running",
-        "dependency_review",
-        "backward deps · review",
-        detail,
-    )
-    task = (
-        "Did the public output or export format of this module change?\n"
-        "Answer YES or NO on the first line, then a one-sentence reason.\n\n"
-        f"<path>{path}</path>\n"
-        f"<before>\n{(pre_content or '')[:12000]}\n</before>\n"
-        f"<after>\n{(post_content or '')[:12000]}\n</after>"
-    )
-    result = run_subagent(
-        task,
-        role="review",
-        files=[path],
-        timeout_seconds=1200,
-    )
-    summary = str((result or {}).get("summary") or "").strip()
-    first = summary.splitlines()[0].strip().upper() if summary else ""
-    changed = first.startswith("YES")
-    status = "done" if (result or {}).get("success") else "failed"
-    verdict_detail = summary.splitlines()[0][:200] if summary else str((result or {}).get("error") or "")
-    _emit_dependency_substep(
-        batch_id,
-        substep_id,
-        status,
-        "dependency_review",
-        "backward deps · review",
-        verdict_detail,
-    )
-    return changed, summary, result
-
-
 def _update_dependent(
     changed_path,
     dependent,
     before_contract,
     after_contract,
-    verdict,
+    delta,
     batch_id=None,
     progress_state=None,
+    limited_edits_used=0,
 ):
     substep_id = f"implement:{dependent}"
     role_name = "subagent_implement"
@@ -175,43 +148,107 @@ def _update_dependent(
         substep_id,
         "running",
         "dependency_implement",
-        "backward deps · implement",
+        "backward deps · limited edit",
         detail,
     )
-    contract_text = json.dumps(
-        {
-            "changed_path": changed_path,
-            "before_outputs": (before_contract or {}).get("outputs"),
-            "after_outputs": (after_contract or {}).get("outputs"),
-            "verdict": verdict,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    task = (
-        f"Update {dependent} so it matches the new public output/export format of {changed_path}.\n"
-        "Change only call sites and types that depend on the old output format.\n"
-        f"<io_change>\n{contract_text}\n</io_change>"
-    )
-    result = run_subagent(
-        task,
-        role="implement",
-        mode="process",
-        files=[dependent, changed_path],
-        timeout_seconds=1200,
-    )
-    success = bool((result or {}).get("success"))
-    status = "done" if success else "failed"
-    result_detail = str((result or {}).get("summary") or (result or {}).get("error") or "")[:200]
+
+    dependent_source = _read(dependent) or ""
+    if limited_edits_used >= MAX_LIMITED_EDITS_PER_FLUSH:
+        result = {
+            "success": False,
+            "escalate": True,
+            "reason": "limited edit budget exceeded for this flush",
+        }
+    else:
+        result = limited_update_dependent(
+            changed_path,
+            dependent,
+            dependent_source,
+            delta,
+            before_contract=before_contract,
+            after_contract=after_contract,
+        )
+
+    if result.get("escalate"):
+        full_result = full_file_update_dependent(
+            changed_path,
+            dependent,
+            dependent_source,
+            delta,
+            reason=str(result.get("reason") or "limited edit escalated"),
+        )
+        if full_result.get("escalate"):
+            status = "failed"
+            payload = {
+                "path": dependent,
+                "changed_path": changed_path,
+                "reason": full_result.get("reason") or result.get("reason"),
+                "hints": (delta or {}).get("hints") or {},
+                "escalate": True,
+            }
+            _emit_dependency_substep(
+                batch_id,
+                substep_id,
+                status,
+                "dependency_implement",
+                "backward deps · escalate",
+                str(payload["reason"])[:200],
+            )
+            return {
+                "success": False,
+                "escalate": True,
+                "escalation": payload,
+                "summary": payload["reason"],
+            }
+
+        refresh_after_file_change(dependent)
+        status = "done"
+        _emit_dependency_substep(
+            batch_id,
+            substep_id,
+            status,
+            "dependency_implement",
+            "backward deps · full-file edit",
+            str(full_result.get("reason") or "")[:200],
+        )
+        return {
+            "success": True,
+            "escalate": False,
+            "summary": full_result.get("reason") or "full-file edit applied",
+        }
+
+    status = "done" if result.get("success") else "failed"
     _emit_dependency_substep(
         batch_id,
         substep_id,
         status,
         "dependency_implement",
-        "backward deps · implement",
-        result_detail,
+        "backward deps · limited edit",
+        str(result.get("reason") or "")[:200],
     )
+    if result.get("success") and not result.get("skipped"):
+        refresh_after_file_change(dependent)
     return result
+
+
+def format_dependency_escalate_feedback(escalations):
+    blocks = []
+    for item in escalations or []:
+        if not isinstance(item, dict):
+            continue
+        blocks.append(
+            "\n".join(
+                [
+                    "<dependency_escalate>",
+                    f"path: {item.get('path', '')}",
+                    f"changed: {item.get('changed_path', '')}",
+                    f"reason: {item.get('reason', '')}",
+                    f"hints: {json.dumps(item.get('hints') or {}, ensure_ascii=False)}",
+                    "</dependency_escalate>",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
 
 
 def propagate_module_io_change(
@@ -222,6 +259,7 @@ def propagate_module_io_change(
     depth=0,
     visited=None,
     implement_count=0,
+    limited_edits_used=0,
     run_state=None,
     batch_id=None,
     progress_state=None,
@@ -234,7 +272,9 @@ def propagate_module_io_change(
         "grepped": False,
         "dependents": [],
         "updates": [],
+        "escalations": [],
         "reason": "",
+        "delta_action": "skip",
         "implement_count": implement_count,
         "review_called": 0,
         "implement_calls": 0,
@@ -245,6 +285,9 @@ def propagate_module_io_change(
         return summary
     if not path or not isinstance(path, str):
         summary["reason"] = "invalid path"
+        return summary
+    if is_denied_dependency_path(path):
+        summary["reason"] = "denied dependency path"
         return summary
     if not is_tracked(path):
         summary["reason"] = "untracked"
@@ -265,27 +308,18 @@ def propagate_module_io_change(
     code_type = infer_code_type(path, post_content or pre_content or "")
     before_contract = extract_public_contract(path, pre_content or "", code_type)
     after_contract = extract_public_contract(path, post_content or "", code_type)
-    changed, reason, needs_llm = output_format_changed(before_contract, after_contract)
-    verdict = reason
-    if needs_llm:
-        changed, verdict, _llm = _llm_output_changed(
-            path,
-            pre_content,
-            post_content,
-            batch_id=batch_id,
-            progress_state=progress_state,
-        )
-        llm_stats["review_called"] += 1
-        llm_stats["llm_used"] = True
-        reason = "llm review: " + str(verdict)[:300]
-    summary["changed"] = bool(changed)
-    summary["reason"] = reason
+    delta = classify_io_delta(before_contract, after_contract)
+    summary["delta_action"] = delta.get("action") or "skip"
+    summary["reason"] = delta.get("reason") or ""
     summary["review_called"] = llm_stats["review_called"]
     summary["implement_calls"] = llm_stats["implement_calls"]
     summary["llm_used"] = llm_stats["llm_used"]
-    if not changed:
+
+    if delta.get("action") != "update_callers":
+        summary["changed"] = False
         return summary
 
+    summary["changed"] = True
     dependents = find_module_dependents(path)
     summary["grepped"] = True
     summary["dependents"] = list(dependents)
@@ -295,17 +329,18 @@ def propagate_module_io_change(
         if implement_count >= MAX_IMPLEMENT:
             summary["updates"].append({"path": dependent, "skipped": "max implement calls"})
             break
-        pre_dep = _read(dependent)
         child = _update_dependent(
             path,
             dependent,
             before_contract,
             after_contract,
-            verdict,
+            delta,
             batch_id=batch_id,
             progress_state=progress_state,
+            limited_edits_used=limited_edits_used,
         )
         implement_count += 1
+        limited_edits_used += 1
         llm_stats["implement_calls"] += 1
         llm_stats["llm_used"] = True
         summary["implement_count"] = implement_count
@@ -313,14 +348,20 @@ def propagate_module_io_change(
         summary["llm_used"] = llm_stats["llm_used"]
         update = {
             "path": dependent,
-            "success": bool((child or {}).get("success")),
-            "summary": str((child or {}).get("summary") or "")[:500],
-            "error": str((child or {}).get("error") or "")[:300],
+            "success": bool(child.get("success")),
+            "skipped": bool(child.get("skipped")),
+            "escalate": bool(child.get("escalate")),
+            "summary": str(child.get("summary") or child.get("reason") or "")[:500],
+            "error": str(child.get("error") or "")[:300],
         }
         summary["updates"].append(update)
-        if not update["success"]:
+        if child.get("escalation"):
+            summary["escalations"].append(child["escalation"])
+        if not update["success"] or update.get("escalate"):
             continue
-        refresh_after_file_change(dependent, run_state=run_state)
+        if update.get("skipped"):
+            continue
+        pre_dep = _read(dependent)
         nested = propagate_module_io_change(
             dependent,
             pre_content=pre_dep,
@@ -328,17 +369,20 @@ def propagate_module_io_change(
             depth=depth + 1,
             visited=visited,
             implement_count=implement_count,
+            limited_edits_used=limited_edits_used,
             run_state=run_state,
             batch_id=batch_id,
             progress_state=progress_state,
         )
         implement_count = int(nested.get("implement_count") or implement_count)
+        limited_edits_used += int(nested.get("implement_calls") or 0)
         summary["implement_count"] = implement_count
         _merge_llm_stats(llm_stats, nested)
         summary["review_called"] = llm_stats["review_called"]
         summary["implement_calls"] = llm_stats["implement_calls"]
         summary["llm_used"] = llm_stats["llm_used"]
         summary["updates"].extend(nested.get("updates") or [])
+        summary["escalations"].extend(nested.get("escalations") or [])
         if nested.get("dependents"):
             summary["dependents"].extend(
                 item for item in nested["dependents"] if item not in summary["dependents"]
@@ -377,6 +421,9 @@ def dependency_cascade_detail(path, cascade=None):
     ok = sum(1 for item in updates if isinstance(item, dict) and item.get("success"))
     reviews = int(cascade.get("review_called") or 0)
     implements = int(cascade.get("implement_calls") or 0)
+    escalations = len(cascade.get("escalations") or [])
+    if escalations:
+        return f"{path} · {implements} implement · {ok} updated · {escalations} escalate"
     if reviews or implements:
         return f"{path} · {reviews} review · {implements} implement · {ok} updated"
     return f"{path} · {len(dependents)} dependents · {ok} updated"
@@ -394,7 +441,7 @@ def _pending_dependency_map(run_state):
 
 def queue_dependency_cascade(run_state, path, pre_content=None):
     path = str(path or "").strip()
-    if not path:
+    if not path or is_denied_dependency_path(path):
         return
     pending = _pending_dependency_map(run_state)
     if pending is None:
@@ -408,6 +455,7 @@ def flush_dependency_cascades(run_state, read_cache=None, batch_id=None):
     if not pending:
         return []
 
+    clear_dependents_cache()
     items = list(pending.values())
     pending.clear()
 
@@ -455,3 +503,7 @@ def flush_dependency_cascades(run_state, read_cache=None, batch_id=None):
             )
         cascades.append(cascade)
     return cascades
+
+
+if __name__ == "__main__":
+    print("PROPAGATE_MODULE_IO_CHANGE helper loaded")

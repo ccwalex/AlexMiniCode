@@ -1,10 +1,10 @@
-import ast
 import json
 
 from call_llm import call_llm_role
 from opencode_session import universal_session
 from cfg import CFG
 from structured_llm_retry import call_llm_role_with_parse_retry, is_valid_verifier_response
+from deterministic_code_checker import deterministic_code_check
 from prompt_override import SYSTEM_PROMPT_OVERRIDE_BLOCK
 
 
@@ -214,7 +214,7 @@ def verify_edit(
     reconstructed_source,
     mutation_log=None,
     code_type="python",
-    use_llm=True,
+    use_llm=False,
 ):
     """
     Content-only verification for final file content after edit.
@@ -258,16 +258,19 @@ def verify_edit(
     is_python = c_type in ["python", "py"] or path.endswith(".py")
 
     if is_python:
-        try:
-            ast.parse(reconstructed_source)
-        except SyntaxError as e:
+        det = deterministic_code_check(path, reconstructed_source)
+        if not det.get("approved") and not det.get("escalate"):
             return {
                 "approved": False,
-                "reason": f"SyntaxError in reconstructed source: {e}",
+                "reason": det.get("reason", "Deterministic code check failed."),
                 "content": reconstructed_source,
+                "checker_status": det.get("status"),
             }
+    else:
+        det = {"approved": True, "escalate": False, "status": "skipped"}
 
-    if not use_llm:
+    force_llm = bool(det.get("escalate")) or det.get("status") == "uncovered"
+    if not use_llm and not force_llm:
         return {
             "approved": True,
             "reason": "Passed deterministic content verification.",
@@ -283,6 +286,16 @@ def verify_edit(
         )
 
         if not isinstance(llm_res, dict):
+            if force_llm:
+                return {
+                    "approved": False,
+                    "reason": det.get(
+                        "reason",
+                        "Deterministic checker escalated but LLM verifier returned non-dict response.",
+                    ),
+                    "content": reconstructed_source,
+                    "checker_status": det.get("status"),
+                }
             return {
                 "approved": True,
                 "reason": "Passed deterministic verification; LLM verifier returned non-dict response, so not blocking edit.",
@@ -290,14 +303,97 @@ def verify_edit(
             }
 
         return {
-            "approved": bool(llm_res.get("approved", True)),
+            "approved": bool(llm_res.get("approved", not force_llm)),
             "reason": str(llm_res.get("reason", "LLM verifier returned no reason.")),
             "content": reconstructed_source,
         }
 
     except Exception as e:
+        if force_llm:
+            return {
+                "approved": False,
+                "reason": det.get(
+                    "reason",
+                    f"Deterministic checker escalated but LLM verifier failed: {e}",
+                ),
+                "content": reconstructed_source,
+                "checker_status": det.get("status"),
+            }
         return {
             "approved": True,
             "reason": f"Passed deterministic verification; LLM verifier failed non-fatally: {e}",
             "content": reconstructed_source,
         }
+
+
+if __name__ == "__main__":
+    import sys
+    from unittest.mock import patch
+
+    _checker = sys.modules["deterministic_code_checker"]
+    _verify_edit = sys.modules[__name__]
+
+    class _FakeStatus:
+        def __init__(self, value):
+            self.value = value
+
+    class _FakeResult:
+        def __init__(self, status, findings=None):
+            self.status = _FakeStatus(status)
+            self.findings = findings or []
+
+    def _fake_ok(source, path="<string>", **kwargs):
+        return _FakeResult("ok")
+
+    def _fake_error(source, path="<string>", **kwargs):
+        return _FakeResult(
+            "error",
+            [{"line": 1, "code": "SYNTAX_ERROR", "message": "invalid syntax"}],
+        )
+
+    def _fake_uncovered(source, path="<string>", **kwargs):
+        return _FakeResult(
+            "uncovered",
+            [{"line": 1, "code": "UNCOVERED_CALL", "message": "unknown API"}],
+        )
+
+    original = "def foo():\n    return 1\n"
+    edited = "def foo():\n    return 2\n"
+
+    with patch.object(_checker, "_get_check_source", return_value=_fake_ok):
+        ok = verify_edit("code/example.py", original, edited, use_llm=False)
+        assert ok["approved"] is True, ok
+
+    with patch.object(_checker, "_get_check_source", return_value=_fake_error):
+        bad = verify_edit("code/example.py", original, "def foo(\n", use_llm=False)
+        assert bad["approved"] is False, bad
+        assert bad.get("checker_status") == "error", bad
+
+    with patch.object(_checker, "_get_check_source", return_value=_fake_uncovered):
+        with patch.object(
+            _verify_edit,
+            "_llm_verify_final_content",
+            return_value={"approved": True, "reason": "ok"},
+        ):
+            escalated = verify_edit(
+                "code/example.py",
+                original,
+                "x = mystery()\n",
+                use_llm=False,
+            )
+            assert escalated["approved"] is True, escalated
+
+        with patch.object(
+            _verify_edit,
+            "_llm_verify_final_content",
+            return_value={"approved": False, "reason": "bad"},
+        ):
+            rejected = verify_edit(
+                "code/example.py",
+                original,
+                "x = mystery()\n",
+                use_llm=False,
+            )
+            assert rejected["approved"] is False, rejected
+
+    print("VERIFY_EDIT SELF TEST PASSED")

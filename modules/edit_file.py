@@ -123,7 +123,7 @@ def edit_file(path, edit_fns, code_type=None):
                 content,
                 mutation_log=[],
                 code_type=c_type,
-                use_llm=True,
+                use_llm=False,
             )
     
             if verify_res.get("approved"):

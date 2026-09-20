@@ -1,0 +1,6 @@
+api: torch.Tensor.cpu
+kind: call
+accepts_nature:
+  - [Tensor]
+effects:
+  nature: Tensor

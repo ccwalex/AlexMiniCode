@@ -1,0 +1,7 @@
+api: numpy.matmul
+requires_nature:
+  - NdArray
+  - NdArray
+effects:
+  nature: NdArray
+shape: matmul

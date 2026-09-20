@@ -21,7 +21,7 @@ MODULE_METADATA = {
 
 from conflict import conflict_message, is_conflict_failure
 from execute_api_call import execute_api_call
-from propagate_module_io_change import flush_dependency_cascades
+from propagate_module_io_change import flush_dependency_cascades, format_dependency_escalate_feedback
 from run_state import RunState
 from subagent_capabilities import normalize_subagent_role
 from subagent_runner import log_subagent_result, run_review_subagents_parallel
@@ -228,6 +228,17 @@ def _record_plan_result(run_state, call, result):
             pass
 
 
+def _dependency_escalations(cascades):
+    escalations = []
+    for cascade in cascades or []:
+        if not isinstance(cascade, dict):
+            continue
+        for item in cascade.get("escalations") or []:
+            if isinstance(item, dict):
+                escalations.append(item)
+    return escalations
+
+
 def _finalize_plan_return(run_state, read_cache, batch_id, base_result):
     pending = getattr(run_state, "pending_dependency_cascades", None)
     if not isinstance(pending, dict) or not pending:
@@ -252,11 +263,25 @@ def _finalize_plan_return(run_state, read_cache, batch_id, base_result):
             return failed
         return base_result
 
-    if cascades:
-        finalized = dict(base_result)
-        finalized["dependency_cascades"] = cascades
-        return finalized
-    return base_result
+    if not cascades:
+        return base_result
+
+    finalized = dict(base_result)
+    finalized["dependency_cascades"] = cascades
+    escalations = _dependency_escalations(cascades)
+    if escalations:
+        feedback = finalized.get("feedback")
+        if not isinstance(feedback, dict):
+            feedback = {}
+        feedback = dict(feedback)
+        feedback["dependency_escalate"] = escalations
+        feedback["message"] = format_dependency_escalate_feedback(escalations)
+        finalized["feedback"] = feedback
+        finalized["success"] = True
+        finalized["status"] = "request_feedback"
+        finalized["done"] = False
+        finalized["request_feedback"] = True
+    return finalized
 
 
 def execute_api_plan(

@@ -1,0 +1,6 @@
+api: torch.Tensor.numpy
+kind: call
+accepts_nature:
+  - [Tensor]
+effects:
+  nature: NdArray

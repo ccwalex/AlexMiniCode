@@ -1,0 +1,6 @@
+api: pandas.DataFrame
+kind: call
+accepts_nature:
+  - [NdArray, List, Series, DataFrame]
+effects:
+  nature: DataFrame

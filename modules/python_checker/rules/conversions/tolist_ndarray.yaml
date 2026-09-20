@@ -1,0 +1,6 @@
+api: numpy.ndarray.tolist
+kind: call
+accepts_nature:
+  - [NdArray]
+effects:
+  nature: List

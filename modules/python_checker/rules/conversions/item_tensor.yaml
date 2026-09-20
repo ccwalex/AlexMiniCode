@@ -1,0 +1,6 @@
+api: torch.Tensor.item
+kind: call
+accepts_nature:
+  - [Tensor]
+effects:
+  nature: Scalar

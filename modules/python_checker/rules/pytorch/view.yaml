@@ -1,0 +1,6 @@
+api: torch.Tensor.view
+requires_nature:
+  - Tensor
+effects:
+  nature: Tensor
+shape: view

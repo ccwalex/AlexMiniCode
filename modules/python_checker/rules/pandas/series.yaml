@@ -1,0 +1,6 @@
+api: pandas.Series
+kind: call
+accepts_nature:
+  - [List, NdArray, Series, Scalar]
+effects:
+  nature: Series

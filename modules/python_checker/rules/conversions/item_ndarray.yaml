@@ -1,0 +1,6 @@
+api: numpy.ndarray.item
+kind: call
+accepts_nature:
+  - [NdArray]
+effects:
+  nature: Scalar

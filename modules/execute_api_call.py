@@ -308,7 +308,7 @@ def execute_api_call(
             pre_content = snapshot_pre_content(path, read_cache)
 
             _progress_substep(batch_id, step_index, call, "verifying", "running", path)
-            v_res = verify_write(path, content, use_llm=True)
+            v_res = verify_write(path, content, use_llm=False)
             _progress_substep(
                 batch_id,
                 step_index,
@@ -363,7 +363,7 @@ def execute_api_call(
                     v_res = verify_write(
                         path,
                         content,
-                        use_llm=True,
+                        use_llm=False,
                     )
             
                     if not isinstance(v_res, dict):

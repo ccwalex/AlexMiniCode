@@ -1,0 +1,6 @@
+api: pandas.DataFrame.merge
+requires_nature:
+  - DataFrame
+  - DataFrame
+effects:
+  nature: DataFrame

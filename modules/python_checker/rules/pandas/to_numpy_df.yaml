@@ -1,0 +1,6 @@
+api: pandas.DataFrame.to_numpy
+kind: call
+accepts_nature:
+  - [DataFrame]
+effects:
+  nature: NdArray
