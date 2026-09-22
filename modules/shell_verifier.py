@@ -23,8 +23,51 @@ MODULE_METADATA = {
     ]
 }
 
+_NULL_SINK_RE = re.compile(r"^/dev/null$", re.IGNORECASE)
+_REDIRECT_TARGET_RE = re.compile(r"(?:^|[^\d])(\d*)>{1,2}\s*([^\s|;&]+)")
+_BASH_NULL_REDIRECT_RE = re.compile(r"&>\s*([^\s|;&]+)")
+
+
+def _is_null_sink_target(target):
+    if not isinstance(target, str):
+        return False
+    target = target.strip()
+    if target in {"&1", "&2"}:
+        return True
+    return bool(_NULL_SINK_RE.match(target))
+
+
+def is_null_sink_redirection_only(cmd):
+    """True when shell redirection only discards output (e.g. > /dev/null, 2>/dev/null)."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return True
+
+    if "| tee" in cmd or "|tee" in cmd:
+        return False
+
+    if ">" not in cmd and ">>" not in cmd:
+        return True
+
+    saw_redirection = False
+    for match in _REDIRECT_TARGET_RE.finditer(cmd):
+        saw_redirection = True
+        if not _is_null_sink_target(match.group(2)):
+            return False
+
+    for match in _BASH_NULL_REDIRECT_RE.finditer(cmd):
+        saw_redirection = True
+        if not _is_null_sink_target(match.group(1)):
+            return False
+
+    return saw_redirection
+
+
 def has_shell_redirection(cmd):
-    return ">" in cmd or ">>" in cmd or "| tee" in cmd or "|tee" in cmd
+    if "| tee" in cmd or "|tee" in cmd:
+        return True
+    if ">" not in cmd and ">>" not in cmd:
+        return False
+    return not is_null_sink_redirection_only(cmd)
 
 def is_safe_inspection_command(cmd):
     safe_starts = ["ls ", "find ", "grep ", "rg ", "cat ", "head ", "tail ", "wc ", "pwd", "tree"]
@@ -280,5 +323,22 @@ if __name__ == "__main__":
     
     t6 = shell_verifier("cat code/a.py > code/b.py", instruction_prompt="Allow shell file writes for this task.")
     assert t6["approved"] == True
+
+    t7 = shell_verifier("pytest tests/ 2>/dev/null", instruction_prompt="Allow pytest.")
+    assert t7["approved"] == True, t7
+
+    t8 = shell_verifier("grep -R foo code/ > /dev/null", instruction_prompt="Allow grep.")
+    assert t8["approved"] == True, t8
+
+    t9 = shell_verifier("python code/run.py > /dev/null 2>&1", instruction_prompt="Allow python.")
+    assert t9["approved"] == True, t9
+
+    t10 = shell_verifier("cat code/a.py > code/b.py 2>/dev/null", instruction_prompt="Do not allow shell file writes.")
+    assert t10["approved"] == False, t10
+
+    assert is_null_sink_redirection_only("pytest 2>/dev/null") is True
+    assert is_null_sink_redirection_only("cat a.py > b.py") is False
+    assert has_shell_redirection("pytest 2>/dev/null") is False
+    assert has_shell_redirection("cat a.py > b.py") is True
     
     print("SHELL_VERIFIER SELF TEST PASSED")

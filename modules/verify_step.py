@@ -5,6 +5,7 @@ from validate_module_metadata import validate_module_metadata
 from validate_metadata_matches_code import validate_metadata_matches_code
 from build_shell_verifier_prompt import build_shell_verifier_prompt
 from build_write_verifier_prompt import build_write_verifier_prompt
+from shell_verifier import is_null_sink_redirection_only
 import hashlib
 
 
@@ -107,25 +108,32 @@ def verify_step(step, modules_override=None, read_cache=None):
         }
 
     if action == "run_shell":
-        if any(x in cmd for x in [">", ">>", "<<"]):
+        if "<<" in cmd:
             return {
                 "approved": False,
-                "reason": "Use write_file instead of shell redirection"
+                "reason": "Use write_file instead of shell heredoc redirection"
             }
 
-        write_like_patterns = [
-            "tee ",
-            "sed -i",
-            "perl -pi",
-            "cat >",
-            "echo >"
-        ]
+        if not is_null_sink_redirection_only(cmd):
+            if any(x in cmd for x in [">", ">>"]):
+                return {
+                    "approved": False,
+                    "reason": "Use write_file instead of shell redirection"
+                }
 
-        if any(p in cmd for p in write_like_patterns):
-            return {
-                "approved": False,
-                "reason": "Shell command appears to modify files; use write_file instead"
-            }
+            write_like_patterns = [
+                "tee ",
+                "sed -i",
+                "perl -pi",
+                "cat >",
+                "echo >"
+            ]
+
+            if any(p in cmd for p in write_like_patterns):
+                return {
+                    "approved": False,
+                    "reason": "Shell command appears to modify files; use write_file instead"
+                }
 
     # =========================
     # BASIC SHAPE CHECKS
