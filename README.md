@@ -9,7 +9,7 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 - **Planner–executor loop** — The main planner emits structured API calls (`/read`, `/write`, `/edit`, `/shell`, `/subagent`, `/request_feedback`, `/done`) that the backend executes in order.
 - **Structured code editing** — Parser-generated block tables for Python, TypeScript/Node, React TSX, and HTML. The model selects block IDs; the backend applies edits using deterministic line spans.
 - **Module metadata registry** — Tracked folders expose `MODULE_METADATA` summaries so the planner can discover available functions without reading every file.
-- **Subagent delegation** — Delegate bounded tasks to review or implement roles in isolated process workers. Review subagents can read, shell, and analyze in parallel; implement subagents run sequentially with full write/edit tools. Only summaries and changed artifact paths return to the main planner.
+- **Subagent delegation** — Delegate bounded tasks to review or implement roles in isolated process workers. Review subagents can read, shell, and analyze in parallel. Implement subagents run sequentially with write/edit tools and should only receive a finished, well-defined checklist (not open-ended design or diagnosis). Only summaries and changed artifact paths return to the main planner.
 - **Web GUI and job queue** — Submit tasks through a browser UI or JSON API. Jobs run one at a time through a sequential queue with logs and status polling.
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
 - **Dual LLM backends** — OpenCode Go subscription (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
@@ -167,7 +167,7 @@ Each planner turn produces a JSON array of API calls. The executor runs them seq
 | Request feedback | `/request_feedback` | `{}` |
 | Finish | `/done` | `{"summary": str}` |
 
-`/subagent` calls must form a trailing batch in a planner turn (optional `/request_feedback` after them). Review subagents run as isolated process workers in parallel; implement subagents run sequentially with write/edit access. In mixed batches, all review subagents run first in parallel, then implement subagents one at a time.
+`/subagent` calls must form a trailing batch in a planner turn (optional `/request_feedback` after them). Review subagents are isolated process workers with read/shell/scratchpad/drop_cache only; they run in parallel and may survey or reason. Implement subagents have full write/edit tools, run sequentially, and should execute a finished checklist only (exact paths, concrete edits, constraints, verify) — not open-ended diagnosis or design. Prefer parent `/write`/`/edit` for small localized patches after a clear review summary. In mixed batches, all review subagents run first in parallel, then implement subagents one at a time.
 
 ## Configuration
 
