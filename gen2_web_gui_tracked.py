@@ -709,7 +709,10 @@ def refresh_current():
     if pid and alive(pid): return c
     res=read_json(job_dir(jid)/'result.json',None)
     if isinstance(res,dict):
-        ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
+        if str(res.get('status') or '').lower()=='cancelled':
+            update_status(jid,status='cancelled',success=False,ended_at=st.get('ended_at') or now(),reason=res.get('reason','cancelled'))
+        else:
+            ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
     else: update_status(jid,status='failed',success=False,ended_at=now(),reason='worker process ended without result.json')
     save_current({}); return None
 def start_next():
