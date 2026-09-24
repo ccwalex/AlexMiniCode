@@ -1,8 +1,5 @@
 import json
 
-from extract_module_metadata_from_content import extract_module_metadata_from_content
-from validate_module_metadata import validate_module_metadata
-from validate_metadata_matches_code import validate_metadata_matches_code
 from build_shell_verifier_prompt import build_shell_verifier_prompt
 from build_write_verifier_prompt import build_write_verifier_prompt
 from shell_verifier import is_null_sink_redirection_only

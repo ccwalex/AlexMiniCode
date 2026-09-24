@@ -1,7 +1,7 @@
 MODULE_METADATA = {
     "name": "extract_public_contract",
     "type": "function",
-    "description": "Extract a deterministic public I/O contract from Python or TS/React source using AST, ignoring LLM MODULE_METADATA.",
+    "description": "Extract a deterministic public I/O contract from Python or TS/React source using AST heuristics.",
     "functions": [
         {
             "name": "extract_public_contract",
