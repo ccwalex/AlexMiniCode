@@ -1,7 +1,7 @@
 MODULE_METADATA = {
     "name": "deterministic_code_checker",
     "type": "function",
-    "description": "Deterministic pre-write/pre-edit checks for Python via vendored python_checker, with MODULE_METADATA validation for tracked modules.",
+    "description": "Deterministic pre-write/pre-edit checks for Python via vendored python_checker.",
     "functions": [
         {
             "name": "deterministic_code_check",
@@ -13,28 +13,6 @@ MODULE_METADATA = {
         }
     ],
 }
-
-from extract_module_metadata_from_content import extract_module_metadata_from_content
-from validate_module_metadata import validate_module_metadata
-from validate_metadata_matches_code import validate_metadata_matches_code
-
-
-def _check_python_module_metadata(path, content):
-    if not (path.startswith("code/modules/") or path.startswith("modules/")):
-        return None
-    meta, err = extract_module_metadata_from_content(content)
-    if err:
-        return f"Failed to extract MODULE_METADATA: {err}"
-    if meta is None:
-        return "Missing MODULE_METADATA in tracked module file."
-    valid, msg = validate_module_metadata(meta)
-    if not valid:
-        return f"Invalid MODULE_METADATA format: {msg}"
-    match, match_msg = validate_metadata_matches_code(meta, content)
-    if not match:
-        return f"Metadata mismatch: {match_msg}"
-    return None
-
 
 def _get_check_source():
     try:
@@ -139,14 +117,9 @@ def deterministic_code_check(path, content):
             escalate=True,
         )
 
-    checks.append("module_metadata")
-    metadata_error = _check_python_module_metadata(path, content)
-    if metadata_error:
-        return _reject("error", metadata_error, checks, findings=findings)
-
     return _approve(
         "ok",
-        "Passed python_checker and module metadata checks.",
+        "Passed python_checker.",
         checks,
         findings=findings,
     )
@@ -158,20 +131,7 @@ if __name__ == "__main__":
 
     _self = sys.modules[__name__]
 
-    valid_module = """MODULE_METADATA = {
-    "name": "dummy_func",
-    "type": "function",
-    "description": "dummy",
-    "functions": [
-        {
-            "name": "dummy_func",
-            "inputs": {},
-            "outputs": "None"
-        }
-    ]
-}
-
-def dummy_func():
+    valid_module = """def dummy_func():
     pass
 """
 
@@ -205,13 +165,10 @@ def dummy_func():
         assert ok["status"] == "ok", ok
         assert ok["escalate"] is False, ok
 
-        missing_meta = "def dummy_func():\n    pass\n"
-        missing = deterministic_code_check("code/modules/missing.py", missing_meta)
-        assert missing["approved"] is False, missing
-        assert missing["status"] == "error", missing
-        assert missing["escalate"] is False, missing
+        module_ok = deterministic_code_check("code/modules/missing.py", valid_module)
+        assert module_ok["approved"] is True, module_ok
 
-        non_module = deterministic_code_check("code/example.py", missing_meta)
+        non_module = deterministic_code_check("code/example.py", "def dummy_func():\n    pass\n")
         assert non_module["approved"] is True, non_module
 
     with patch.object(_self, "_get_check_source", return_value=_fake_error):

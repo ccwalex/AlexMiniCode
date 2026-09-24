@@ -19,19 +19,6 @@ MODULE_METADATA = {
 
 
 def build_prompt(task, context=""):
-    metadata_example = '''MODULE_METADATA = {
-  "name": "module_name",
-  "type": "function or class",
-  "description": "what it does",
-  "functions": [
-    {
-      "name": "function_name",
-      "inputs": { "arg": "type, shape of input" },
-      "outputs": "type, shape of output"
-    }
-  ]
-}'''
-
     def safe_read(path):
         ok, content = read_file(path)
         return content if ok else ""
@@ -39,7 +26,7 @@ def build_prompt(task, context=""):
     project = safe_read("agent_memory/core/project.md")
     principles = safe_read("agent_memory/core/principles.md")
     plan = safe_read("agent_memory/planning/current_plan.md")
-    modules = safe_read("agent_memory/core/modules.json")
+    modules = safe_read("agent_memory/core/metadata.json")
     memory = safe_read("agent_memory/reasoning/llm_memory.json")
 
     system_prompt = f'''
@@ -62,7 +49,6 @@ Allowed code: TypeScript, React TSX, CSS, JSON, Python
 <naming_rules>
 - File names must match module purpose.
 - Primary class or function names should match the file name semantically.
-- Metadata name must match the primary exported class or function.
 
 Examples:
 - code/modules/resnet3.py -> class ResNet3
@@ -146,14 +132,7 @@ Remember to use this for any read_file actions
 <codebase_rules>
 - All main scripts must be placed in: code/
 - All reusable components must be placed in: code/modules/
-- Each file in code/modules/ must include a top-level MODULE_METADATA dictionary.
-
-Metadata format:
-
-{metadata_example}
-
-For every file in code/modules/, MODULE_METADATA["name"] MUST exactly match the primary exported class or function name that downstream code should import.
-if input / outputs are arrays or pytorch tensors, define them in metadata
+- Module metadata is maintained separately by the meta_writer pipeline after file changes; do not embed metadata dictionaries in source files.
 - Use write_file for any file creation or modification.
 - Do NOT use shell redirection: >, >>, <<.
 - Do NOT use cat > file, echo > file, heredocs, sed -i, or tee to modify files.

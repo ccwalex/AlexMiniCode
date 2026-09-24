@@ -35,7 +35,6 @@ import ast
 import json
 import re
 
-from extract_module_metadata_from_content import extract_module_metadata_from_content
 from infer_code_type import infer_code_type
 
 
@@ -136,11 +135,35 @@ def _py_func_sig(node, skip_self=False):
 
 
 def _python_primary_export_name(content):
-    meta, _err = extract_module_metadata_from_content(content)
-    if isinstance(meta, dict):
-        name = meta.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "__all__":
+                try:
+                    all_names = ast.literal_eval(node.value)
+                except Exception:
+                    continue
+                if isinstance(all_names, (list, tuple)) and len(all_names) == 1:
+                    name = all_names[0]
+                    if isinstance(name, str) and name.strip():
+                        return name.strip()
+
+    public_names = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not node.name.startswith("_"):
+                public_names.append(node.name)
+        elif isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+            public_names.append(node.name)
+
+    if len(public_names) == 1:
+        return public_names[0]
     return None
 
 
@@ -502,7 +525,7 @@ if __name__ == "__main__":
     )
     after_same = extract_public_contract(
         "mod.py",
-        'MODULE_METADATA={"name":"x"}\ndef foo(x: int) -> dict:\n    return {"a": 1}\n',
+        'def foo(x: int) -> dict:\n    return {"a": 1}\n',
         "py",
     )
     after_changed = extract_public_contract(
@@ -518,14 +541,14 @@ if __name__ == "__main__":
 
     helper_only_before = extract_public_contract(
         "mod.py",
-        'MODULE_METADATA = {"name": "foo"}\n'
+        '__all__ = ["foo"]\n'
         "def helper() -> dict:\n    return {}\n"
         "def foo(x: int) -> dict:\n    return {}\n",
         "py",
     )
     helper_only_after = extract_public_contract(
         "mod.py",
-        'MODULE_METADATA = {"name": "foo"}\n'
+        '__all__ = ["foo"]\n'
         "def helper() -> list:\n    return []\n"
         "def foo(x: int) -> dict:\n    return {}\n",
         "py",
@@ -537,14 +560,14 @@ if __name__ == "__main__":
 
     primary_changed_before = extract_public_contract(
         "mod.py",
-        'MODULE_METADATA = {"name": "foo"}\n'
+        '__all__ = ["foo"]\n'
         "def helper() -> dict:\n    return {}\n"
         "def foo(x: int) -> dict:\n    return {}\n",
         "py",
     )
     primary_changed_after = extract_public_contract(
         "mod.py",
-        'MODULE_METADATA = {"name": "foo"}\n'
+        '__all__ = ["foo"]\n'
         "def helper() -> dict:\n    return {}\n"
         "def foo(x: int) -> list:\n    return []\n",
         "py",

@@ -32,7 +32,7 @@ class DependencyCascadeTests(unittest.TestCase):
         )
         metadata_only = extract_public_contract(
             "mod.py",
-            'MODULE_METADATA = {"name": "other"}\ndef foo(x: int) -> dict:\n    return {"a": 1}\n',
+            'def foo(x: int) -> dict:\n    return {"a": 1}\n',
             "py",
         )
         changed_ret = extract_public_contract(
@@ -50,14 +50,14 @@ class DependencyCascadeTests(unittest.TestCase):
     def test_helper_change_ignored_when_primary_export_unchanged(self):
         before = extract_public_contract(
             "mod.py",
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> dict:\n    return {}\n"
             "def foo(x: int) -> dict:\n    return {}\n",
             "py",
         )
         after = extract_public_contract(
             "mod.py",
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> list:\n    return []\n"
             "def foo(x: int) -> dict:\n    return {}\n",
             "py",
@@ -69,14 +69,14 @@ class DependencyCascadeTests(unittest.TestCase):
     def test_primary_change_in_multi_export_module_needs_llm(self):
         before = extract_public_contract(
             "mod.py",
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> dict:\n    return {}\n"
             "def foo(x: int) -> dict:\n    return {}\n",
             "py",
         )
         after = extract_public_contract(
             "mod.py",
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> dict:\n    return {}\n"
             "def foo(x: int) -> list:\n    return []\n",
             "py",
@@ -138,12 +138,12 @@ class DependencyCascadeTests(unittest.TestCase):
 
     def test_helper_only_change_does_not_cascade(self):
         before = (
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> dict:\n    return {}\n"
             "def foo(x: int) -> dict:\n    return {}\n"
         )
         after = (
-            'MODULE_METADATA = {"name": "foo"}\n'
+            '__all__ = ["foo"]\n'
             "def helper() -> list:\n    return []\n"
             "def foo(x: int) -> dict:\n    return {}\n"
         )
