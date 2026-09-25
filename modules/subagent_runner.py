@@ -175,6 +175,24 @@ def _artifacts_from_result(result):
     return artifacts
 
 
+def _delegation_rules_for_role(role):
+    role = normalize_subagent_role(role)
+    common = [
+        "Complete this task independently. Do not delegate to another subagent.",
+        "Be concise: use minimal output length; do not write for aesthetics.",
+    ]
+    if role == "implement":
+        return common + [
+            "You are an executor, not a planner: apply the closed checklist in <delegated_task>.",
+            "Do not reopen architecture, expand scope, or invent requirements.",
+            "If the brief is ambiguous or incomplete, end with /done summarizing what is missing; do not guess.",
+            "End with /done whose summary lists paths changed and verify result only.",
+        ]
+    return common + [
+        "End with /done whose summary is a brief, minimal result for the parent planner.",
+    ]
+
+
 def _run_process(task, role, files, timeout_seconds):
     file_context, read_errors = _load_file_context(files)
     task_parts = [
@@ -182,9 +200,7 @@ def _run_process(task, role, files, timeout_seconds):
         task,
         "</delegated_task>",
         "<delegation_rules>",
-        "Complete this task independently. Do not delegate to another subagent.",
-        "Be concise: use minimal output length; do not write for aesthetics.",
-        "End with /done whose summary is a brief, minimal result for the parent planner.",
+        *_delegation_rules_for_role(role),
         "</delegation_rules>",
     ]
     if file_context:
