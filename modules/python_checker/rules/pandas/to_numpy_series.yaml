@@ -1,0 +1,6 @@
+api: pandas.Series.to_numpy
+kind: call
+accepts_nature:
+  - [Series]
+effects:
+  nature: NdArray

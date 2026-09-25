@@ -1,0 +1,6 @@
+api: numpy.array
+kind: call
+accepts_nature:
+  - [List, NdArray, Scalar, Series, Tensor]
+effects:
+  nature: NdArray

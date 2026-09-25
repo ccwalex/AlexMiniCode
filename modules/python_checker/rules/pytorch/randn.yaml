@@ -1,0 +1,4 @@
+api: torch.randn
+effects:
+  nature: Tensor
+shape: randn

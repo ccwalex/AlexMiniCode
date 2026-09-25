@@ -76,11 +76,19 @@ endpoint table injected to prompt
 
 `/subagent` calls must form a trailing batch in a planner turn (optional
 `/request_feedback` after them). Review subagents are isolated process workers
-with read/shell/scratchpad/drop_cache only; they run in parallel. Implement
-subagents have full write/edit tools and run sequentially. In mixed batches,
-all review subagents run first in parallel, then implement subagents one at a
-time. Only the child summary, status, and changed artifact paths return to the
-main planner.
+with read/shell/scratchpad/drop_cache only; they run in parallel and may survey
+or reason. Implement subagents have full write/edit tools, run sequentially,
+and should execute a finished checklist only (exact paths, concrete edits,
+constraints, verify) — not open-ended diagnosis or design. Prefer parent
+`/write`/`/edit` for small localized patches after a clear review summary. In
+mixed batches, all review subagents run first in parallel, then implement
+subagents one at a time. Only the child summary, status, and changed artifact
+paths return to the main planner.
+
+`/scratchpad` is task-local RAM for a live working plan across planner turns
+(conclusions, next steps, constraints, open questions). Prefer `append` for
+new findings; use `set` only when rewriting the whole plan. Do not copy the
+current task into the scratchpad. Content is not persisted across jobs.
 
 
 Gen 2 structured edit uses a parser-generated flat block table.

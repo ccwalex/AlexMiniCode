@@ -1,0 +1,6 @@
+api: pandas.Series.item
+kind: call
+accepts_nature:
+  - [Series]
+effects:
+  nature: Scalar

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Gen2 Agent</title>
 <style>
-:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a;--progress-dependency:#f4f6f8}
+:root{color-scheme:dark;--bg:#101418;--panel:#171d23;--panel2:#202832;--text:#e8edf2;--muted:#9aa7b2;--accent:#62a8ff;--bad:#ff6b6b;--good:#58d68d;--border:#33404d;--progress-running:#e67e22;--progress-planned:#5a6a7a;--progress-dependency:#f4f6f8;--progress-verify-deterministic:#62a8ff}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui}
 .topbar{display:flex;align-items:center;gap:12px;padding:12px 12px 0}
 .topbar h1{margin:0;font-size:20px}
@@ -41,6 +41,7 @@ button{margin:6px 4px 6px 0;background:var(--accent);color:#06111f;border:0;bord
 .badge-done{background:var(--good)}
 .badge-meta{background:var(--good)}
 .badge-dependency{background:var(--progress-dependency)}
+.badge-verify-deterministic{background:var(--progress-verify-deterministic)}
 .badge-failed{background:var(--bad)}
 .step-detail{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .logs{height:calc(100vh - 460px);overflow:auto;background:#05080b;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:monospace;font-size:12px}
@@ -112,7 +113,8 @@ button:disabled{opacity:.55;cursor:wait}
 Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes.</textarea>
-<button onclick="submitJob()">Submit</button>
+<button id="submitJobBtn" onclick="submitJob()">Submit</button>
+<button id="stopAgentBtn" class="danger" onclick="stopCurrentJob()" disabled>Stop Agent</button>
 <button class="secondary" onclick="refreshContext()">Refresh</button>
 <h2>Git</h2>
 <button class="secondary" onclick="gitAction('status')">Status</button>
@@ -908,7 +910,33 @@ function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=
 
 async function initAgent(){systemStatus.textContent=JSON.stringify(await api('/api/init',{method:'POST'}),null,2);await refreshEverything()}
 async function refreshAllRegistries(){systemStatus.textContent=JSON.stringify(await api('/api/refresh_all_registries',{method:'POST'}),null,2);await loadRegistryContexts()}
-async function stopCurrentJob(){if(!confirm('Stop the current running job?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_current_job',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop current failed:\n'+e.stack}}
+function updateAgentRunningState(current){
+  const btn=document.getElementById('stopAgentBtn');
+  if(!btn)return;
+  if(current&&current.job_id){
+    btn.disabled=false;
+    const id=String(current.job_id);
+    const shortId=id.length>22?id.slice(0,22)+'…':id;
+    btn.textContent=`Stop Agent (${shortId})`;
+  }else{
+    btn.disabled=true;
+    btn.textContent='Stop Agent';
+  }
+}
+async function stopCurrentJob(){
+  if(!confirm('Terminate the running agent? This stops the job like ending the script.'))return;
+  const btn=document.getElementById('stopAgentBtn');
+  const prev=btn?btn.textContent:'Stop Agent';
+  if(btn){btn.disabled=true;btn.textContent='Stopping...'}
+  try{
+    systemStatus.textContent=JSON.stringify(await api('/api/stop_current_job',{method:'POST'}),null,2);
+    await refreshEverything();
+  }catch(e){
+    systemStatus.textContent='Stop failed:\n'+e.stack;
+  }finally{
+    if(btn)btn.textContent=prev;
+  }
+}
 async function restartCurrentJob(){if(!confirm('Stop and restart the current running job?'))return;try{const d=await api('/api/restart_current_job',{method:'POST'});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart current failed:\n'+e.stack}}
 async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.');return}if(!confirm('Restart selected job as a new job?'))return;try{const d=await api('/api/restart_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:selectedJob})});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart selected failed:\n'+e.stack}}
 async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);selectedQueuedJobs.clear();await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
@@ -951,11 +979,13 @@ function toggleQueuedJob(id,checked){
 }
 async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups],role_overrides:collectJobRoleOverrides()};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
 async function refreshEverything(){
+  let tick=null;
   try{
-    const tick=await api('/api/tick',{method:'POST'});
+    tick=await api('/api/tick',{method:'POST'});
     jobQueue=Array.isArray(tick.queue)?tick.queue:[];
     currentJobId=tick.current?.job_id||null;
   }catch(e){}
+  updateAgentRunningState(tick?.current);
   await loadJobs();
   if(selectedJob){
     try{await loadJob(selectedJob)}
@@ -988,9 +1018,12 @@ planProgressEl.addEventListener('scroll',()=>{const el=planProgressEl;progressUs
 function progressBadgeClass(row){
   const status=String(row.status||'');
   const phase=String(row.phase||'');
+  const verifyMode=String(row.verify_mode||'');
   if(phase==='writing_meta') return status==='done'?'badge-meta':'badge-meta';
   if(phase==='dependency') return status==='failed'?'badge-failed':'badge-dependency';
   if(['failed','timeout'].includes(status)) return 'badge-failed';
+  if(phase==='verifying'&&verifyMode==='deterministic') return 'badge-verify-deterministic';
+  if(phase==='verifying'&&verifyMode==='llm') return 'badge-running';
   if(['done','skipped'].includes(status)) return 'badge-done';
   if(['running','started','verifying','repairing','shell'].includes(status)||['verifying','repairing','shell'].includes(phase)) return 'badge-running';
   return 'badge-planned';

@@ -215,14 +215,18 @@ The debug scratchpad exists only for the current execute_debug_v2 session.
 """.strip()
     else:
         description = """
-The scratchpad is task-local RAM storage for notes the planner wants to keep
-across turns within the same main run_task_v2 loop.
+The scratchpad is task-local RAM storage for a live working plan across turns
+within the same main run_task_v2 loop.
 
 Use it to preserve:
-- intermediate conclusions
-- partial plans
+- intermediate conclusions and decisions
+- next steps
 - file/path findings
 - constraints discovered during the task
+- open questions still unresolved
+
+Do NOT copy <current_task> or restate the user request into the scratchpad.
+Prefer short structured bullets (e.g. Done / Next / Constraints) when helpful.
 
 The scratchpad is NOT persisted to disk and is cleared when the task ends.
 """.strip()
@@ -241,8 +245,7 @@ Payload:
 
 Rules:
 - Use read to inspect current scratchpad content.
-- Use set to replace the entire scratchpad.
-- Use append to add text to the end of the scratchpad.
+- Prefer append to add new findings; use set only when intentionally rewriting the whole working plan.
 - Use clear to empty the scratchpad.
 - Scratchpad content is injected back into later planner turns for this loop only.
 - Scratchpad is omitted from the prompt when empty or on the first loop turn.
@@ -262,6 +265,8 @@ if __name__ == "__main__":
     assert render_scratchpad_block("note", loop="main", iteration=1) == ""
     assert '<scratchpad loop="main">' in render_scratchpad_block("note", loop="main", iteration=2)
     assert "task-local RAM" in get_scratchpad_endpoint_doc("main")
+    assert "live working plan" in get_scratchpad_endpoint_doc("main")
+    assert "Prefer append" in get_scratchpad_endpoint_doc("main")
     assert "9. /scratchpad" in get_scratchpad_endpoint_doc("main")
     assert "debug scratchpad" in get_scratchpad_endpoint_doc("debug").lower()
     assert "8. /scratchpad" in get_scratchpad_endpoint_doc("debug")

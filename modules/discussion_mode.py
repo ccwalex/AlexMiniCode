@@ -5,6 +5,7 @@ by revising project.md and current_plan.md.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from cfg import CFG
 from read_file import read_file
 from conflict import decision_path, DECISION_REL_PATH
 from model_config import get_role_config
+from cursor_model_selection import normalize_cursor_params
 
 MODULE_METADATA = {
     "name": "discussion_mode",
@@ -58,6 +60,11 @@ PLAN_REL = "agent_memory/planning/current_plan.md"
 SESSION_REL = os.path.join("agent_memory", "discussion", "session.json")
 
 END_TOKEN = "[END]"
+END_FINALIZATION_NUDGE = (
+    "The user has sent [END]. Provide the final revised project.md "
+    "and current_plan.md using <project>...</project> and "
+    "<plan>...</plan> tags with full file contents."
+)
 
 DISCUSSION_SYSTEM_PROMPT = """
 You are a planning discussion assistant for a coding agent project.
@@ -222,6 +229,10 @@ def load_session() -> dict:
     data.setdefault("model", defaults["model"])
     data.setdefault("effort", defaults["effort"])
     data.setdefault("max_tokens", defaults["max_tokens"])
+    data.setdefault("cursor_agent_id", "")
+    data.setdefault("cursor_agent_model", "")
+    data.setdefault("cursor_agent_params", [])
+    data.setdefault("cursor_context_hash", "")
     data.setdefault("updated_at", _now_iso())
     return data
 
@@ -236,8 +247,24 @@ def save_session(session: dict) -> dict:
     return session
 
 
+def clear_cursor_conversation_session(session: dict | None = None) -> dict:
+    session = dict(session or load_session())
+    agent_id = str(session.get("cursor_agent_id") or "").strip()
+    if agent_id:
+        from call_llm_cursor import close_cursor_conversation
+
+        close_cursor_conversation(agent_id)
+    session["cursor_agent_id"] = ""
+    session["cursor_agent_model"] = ""
+    session["cursor_agent_params"] = []
+    session["cursor_context_hash"] = ""
+    return session
+
+
 def reset_session(defaults: dict | None = None) -> dict:
     settings = discussion_defaults(defaults)
+    existing = load_session()
+    clear_cursor_conversation_session(existing)
     session = {
         "messages": [],
         "selected_indices": [],
@@ -250,6 +277,10 @@ def reset_session(defaults: dict | None = None) -> dict:
         "model": settings["model"],
         "effort": settings["effort"],
         "max_tokens": settings["max_tokens"],
+        "cursor_agent_id": "",
+        "cursor_agent_model": "",
+        "cursor_agent_params": [],
+        "cursor_context_hash": "",
         "updated_at": _now_iso(),
     }
     return save_session(session)
@@ -295,6 +326,13 @@ def discussion_update_settings(
     session: dict | None = None,
 ) -> dict:
     session = session if isinstance(session, dict) else load_session()
+    prior_settings = normalize_discussion_settings(
+        model=session.get("model"),
+        effort=session.get("effort"),
+        max_tokens=session.get("max_tokens"),
+        source=session.get("source"),
+        defaults=defaults,
+    )
     settings = normalize_discussion_settings(
         model=model,
         effort=effort,
@@ -302,12 +340,17 @@ def discussion_update_settings(
         source=source,
         defaults=defaults,
     )
+    if (
+        settings["source"] != prior_settings["source"]
+        or settings["model"] != prior_settings["model"]
+    ):
+        clear_cursor_conversation_session(session)
     session.update(settings)
     save_session(session)
     return {"success": True, "settings": settings, "session": session, "note": "Discussion LLM settings come from global Model Config."}
 
 
-def build_discussion_system_prompt(
+def build_discussion_context_body(
     decisions: list[dict],
     project: str,
     current_plan: str,
@@ -318,8 +361,7 @@ def build_discussion_system_prompt(
         indent=2,
     )
     return (
-        DISCUSSION_SYSTEM_PROMPT
-        + "\n\n<selected_decisions>\n"
+        "<selected_decisions>\n"
         + decisions_json
         + "\n</selected_decisions>\n\n<project>\n"
         + str(project or "")
@@ -327,6 +369,47 @@ def build_discussion_system_prompt(
         + str(current_plan or "")
         + "\n</plan>"
     )
+
+
+def build_discussion_system_prompt(
+    decisions: list[dict],
+    project: str,
+    current_plan: str,
+) -> str:
+    return (
+        DISCUSSION_SYSTEM_PROMPT
+        + "\n\n"
+        + build_discussion_context_body(decisions, project, current_plan)
+    )
+
+
+def build_discussion_context_update(
+    decisions: list[dict],
+    project: str,
+    current_plan: str,
+) -> str:
+    return (
+        "<context_update>\n"
+        + build_discussion_context_body(decisions, project, current_plan)
+        + "\n</context_update>"
+    )
+
+
+def compute_discussion_context_hash(
+    decisions: list[dict],
+    project: str,
+    current_plan: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "decisions": decisions or [],
+            "project": project or "",
+            "plan": current_plan or "",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def extract_proposed_files(text: str) -> dict:
@@ -401,6 +484,159 @@ def _entries_for_indices(indices: list[int], all_decisions: list[dict]) -> list[
     return out
 
 
+def _persist_cursor_session_fields(
+    session: dict,
+    *,
+    agent_id: str,
+    model: str,
+    cursor_params,
+    context_hash: str,
+) -> None:
+    session["cursor_agent_id"] = str(agent_id or "").strip()
+    session["cursor_agent_model"] = str(model or "").strip()
+    session["cursor_agent_params"] = normalize_cursor_params(cursor_params)
+    session["cursor_context_hash"] = str(context_hash or "").strip()
+
+
+def _build_discussion_llm_messages(session: dict, system_prompt: str, is_end: bool) -> list[dict]:
+    llm_messages = [{"role": "system", "content": system_prompt}]
+    for item in session.get("messages", []):
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role in ("user", "assistant") and isinstance(content, str):
+            llm_messages.append({"role": role, "content": content})
+    if is_end:
+        llm_messages.append({"role": "user", "content": END_FINALIZATION_NUDGE})
+    return llm_messages
+
+
+def _build_discussion_send_message(
+    message: str,
+    is_end: bool,
+    *,
+    context_changed: bool,
+    decisions: list[dict],
+    project: str,
+    plan: str,
+) -> str:
+    send_message = str(message or "")
+    if is_end:
+        send_message = f"{send_message}\n\n{END_FINALIZATION_NUDGE}"
+    if context_changed:
+        send_message = (
+            build_discussion_context_update(decisions, project, plan)
+            + "\n\n"
+            + send_message
+        )
+    return send_message
+
+
+def _can_continue_cursor_session(session: dict, model: str, cursor_params) -> bool:
+    agent_id = str(session.get("cursor_agent_id") or "").strip()
+    stored_model = str(session.get("cursor_agent_model") or "").strip()
+    stored_params = normalize_cursor_params(session.get("cursor_agent_params"))
+    current_params = normalize_cursor_params(cursor_params)
+    return bool(agent_id and stored_model == str(model or "").strip() and stored_params == current_params)
+
+
+def _call_discussion_llm(
+    *,
+    session: dict,
+    settings: dict,
+    llm_messages: list[dict],
+    send_message: str,
+    context_hash: str,
+    thinking: str,
+    max_tokens: int,
+    can_continue: bool,
+) -> dict:
+    from call_llm import call_llm_role
+    from call_llm_cursor import (
+        bootstrap_cursor_conversation,
+        continue_cursor_conversation,
+    )
+    from opencode_session import session_for
+
+    source = str(settings.get("source") or "opencode").strip().lower()
+    model = settings["model"]
+    cursor_params = normalize_cursor_params(get_role_config("discussion").get("cursor_params"))
+    timeout = CFG.get_timeout("discussion_call", 240)
+
+    if source != "cursor":
+        return call_llm_role(
+            role="discussion",
+            messages=llm_messages,
+            max_tokens=int(max_tokens),
+            thinking=thinking,
+            model=model,
+            timeout=timeout,
+            session_id=session_for("discussion"),
+        )
+
+    if can_continue:
+        agent_id = str(session.get("cursor_agent_id") or "").strip()
+        try:
+            result = continue_cursor_conversation(
+                agent_id,
+                send_message,
+                model=model,
+                thinking=thinking,
+                max_tokens=int(max_tokens),
+                cursor_params=cursor_params,
+            )
+            _persist_cursor_session_fields(
+                session,
+                agent_id=result.get("agent_id") or agent_id,
+                model=model,
+                cursor_params=cursor_params,
+                context_hash=context_hash,
+            )
+            result["discussion_cursor_mode"] = "continue"
+            return result
+        except Exception as exc:
+            print(f"[Discussion Cursor] continuation failed: {exc}; re-bootstrapping")
+            clear_cursor_conversation_session(session)
+
+    try:
+        result = bootstrap_cursor_conversation(
+            llm_messages,
+            model=model,
+            thinking=thinking,
+            max_tokens=int(max_tokens),
+            cursor_params=cursor_params,
+        )
+        _persist_cursor_session_fields(
+            session,
+            agent_id=result.get("agent_id"),
+            model=model,
+            cursor_params=cursor_params,
+            context_hash=context_hash,
+        )
+        result["discussion_cursor_mode"] = "bootstrap"
+        return result
+    except Exception as bootstrap_exc:
+        print(
+            f"[Discussion Cursor] bootstrap failed: {bootstrap_exc}; "
+            "falling back to one-shot call_llm_role"
+        )
+        clear_cursor_conversation_session(session)
+        result = call_llm_role(
+            role="discussion",
+            messages=llm_messages,
+            max_tokens=int(max_tokens),
+            thinking=thinking,
+            model=model,
+            timeout=timeout,
+            session_id=session_for("discussion"),
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result["discussion_cursor_mode"] = "one_shot_fallback"
+        return result
+
+
 def discussion_context(defaults: dict | None = None) -> dict:
     session = load_session()
     resolved_defaults = discussion_defaults(defaults)
@@ -436,7 +672,13 @@ def discussion_send_message(
         return {"success": False, "error": "message required"}
 
     session = session if isinstance(session, dict) else load_session()
-    settings = normalize_discussion_settings(defaults=defaults)
+    settings = normalize_discussion_settings(
+        model=session.get("model"),
+        effort=session.get("effort"),
+        max_tokens=session.get("max_tokens"),
+        source=session.get("source"),
+        defaults=defaults,
+    )
     model = settings["model"]
     effort = settings["effort"]
     max_tokens = settings["max_tokens"]
@@ -470,41 +712,35 @@ def discussion_send_message(
         current_plan=plan,
     )
 
-    llm_messages = [{"role": "system", "content": system_prompt}]
-    for item in session.get("messages", []):
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role")
-        content = item.get("content")
-        if role in ("user", "assistant") and isinstance(content, str):
-            llm_messages.append({"role": role, "content": content})
-
-    if is_end:
-        llm_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "The user has sent [END]. Provide the final revised project.md "
-                    "and current_plan.md using <project>...</project> and "
-                    "<plan>...</plan> tags with full file contents."
-                ),
-            }
-        )
+    llm_messages = _build_discussion_llm_messages(session, system_prompt, is_end)
 
     thinking = _normalize_effort(effort)
-
-    from call_llm import call_llm_role
-    from opencode_session import session_for
+    context_hash = compute_discussion_context_hash(selected_entries, project, plan)
+    cursor_params = normalize_cursor_params(get_role_config("discussion").get("cursor_params"))
+    can_continue = (
+        settings["source"] == "cursor"
+        and _can_continue_cursor_session(session, model, cursor_params)
+    )
+    context_changed = can_continue and str(session.get("cursor_context_hash") or "") != context_hash
+    send_message = _build_discussion_send_message(
+        message,
+        is_end,
+        context_changed=context_changed,
+        decisions=selected_entries,
+        project=project,
+        plan=plan,
+    )
 
     try:
-        raw = call_llm_role(
-            role="discussion",
-            messages=llm_messages,
-            max_tokens=int(max_tokens),
+        raw = _call_discussion_llm(
+            session=session,
+            settings=settings,
+            llm_messages=llm_messages,
+            send_message=send_message,
+            context_hash=context_hash,
             thinking=thinking,
-            model=model,
-            timeout=CFG.get_timeout("discussion_call", 240),
-            session_id=session_for("discussion"),
+            max_tokens=int(max_tokens),
+            can_continue=can_continue,
         )
     except Exception as e:
         session["messages"].pop()
@@ -632,8 +868,29 @@ Step 1: fix ambiguity
     assert settings["effort"] == "h"
     assert settings["max_tokens"] == 8192
 
+    ctx_hash_a = compute_discussion_context_hash(
+        [{"index": 0, "conflict": "a"}],
+        "# project",
+        "# plan",
+    )
+    ctx_hash_b = compute_discussion_context_hash(
+        [{"index": 0, "conflict": "b"}],
+        "# project",
+        "# plan",
+    )
+    assert ctx_hash_a != ctx_hash_b
+
+    update = build_discussion_context_update(
+        decisions=[{"index": 0, "conflict": "ambiguous scope"}],
+        project="# Old project",
+        current_plan="# Old plan",
+    )
+    assert update.startswith("<context_update>")
+    assert "<selected_decisions>" in update
+
     session = reset_session()
     assert session.get("phase") == "chat"
     assert session.get("has_pending_proposals") is False
+    assert session.get("cursor_agent_id") == ""
 
     print("DISCUSSION_MODE SELF TEST PASSED")

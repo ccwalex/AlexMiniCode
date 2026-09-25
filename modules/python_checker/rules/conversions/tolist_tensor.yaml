@@ -1,0 +1,6 @@
+api: torch.Tensor.tolist
+kind: call
+accepts_nature:
+  - [Tensor]
+effects:
+  nature: List

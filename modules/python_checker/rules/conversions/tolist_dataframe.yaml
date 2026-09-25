@@ -1,0 +1,6 @@
+api: pandas.DataFrame.tolist
+kind: call
+accepts_nature:
+  - [DataFrame]
+effects:
+  nature: List

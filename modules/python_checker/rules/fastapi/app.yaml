@@ -1,0 +1,3 @@
+api: fastapi.FastAPI
+effects:
+  nature: FastAPIApp

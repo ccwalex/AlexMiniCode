@@ -20,6 +20,14 @@ MODULE_METADATA = {
             },
             "outputs": "tuple (changed bool, reason str, used_llm_fallback_needed bool)",
         },
+        {
+            "name": "classify_io_delta",
+            "inputs": {
+                "before": "dict contract",
+                "after": "dict contract",
+            },
+            "outputs": "dict with action skip or update_callers, reason, and hints",
+        },
     ],
 }
 
@@ -40,17 +48,89 @@ def _ann(node):
         return ast.dump(node, annotate_fields=False)
 
 
+def _kwonly_param_default(kw_defaults, kw_index):
+    default_node = kw_defaults[kw_index] if kw_index < len(kw_defaults) else None
+    if default_node is None:
+        return None, True
+    return _ann(default_node), False
+
+
+def _return_arity_from_annotation(returns_ann):
+    if not returns_ann:
+        return None
+    text = str(returns_ann).strip()
+    if not text or text in {"None", "typing.None", "NoneType"}:
+        return 0
+    lowered = text.lower()
+    if lowered.startswith("tuple[") or lowered.startswith("typing.tuple["):
+        inner = text[text.index("[") + 1 : text.rindex("]")]
+        parts = [part.strip() for part in inner.split(",") if part.strip()]
+        return len(parts) if parts else None
+    if lowered.startswith("tuple("):
+        inner = text[text.index("(") + 1 : text.rindex(")")]
+        parts = [part.strip() for part in inner.split(",") if part.strip()]
+        return len(parts) if parts else None
+    return 1
+
+
+def _return_arity_from_body(node):
+    arities = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Return) or child.value is None:
+            continue
+        value = child.value
+        if isinstance(value, ast.Tuple):
+            arities.add(len(value.elts))
+        elif isinstance(value, ast.Name) and value.id == "None":
+            arities.add(0)
+        else:
+            arities.add(1)
+    if len(arities) == 1:
+        return next(iter(arities))
+    return None
+
+
 def _py_func_sig(node, skip_self=False):
-    args = []
-    raw_args = list(node.args.args)
-    if skip_self and raw_args:
-        raw_args = raw_args[1:]
-    for arg in raw_args:
-        args.append({"name": arg.arg, "annotation": _ann(arg.annotation)})
+    params = []
+    positional_args = list(node.args.args)
+    start_index = 1 if skip_self and positional_args else 0
+    visible_args = positional_args[start_index:]
+    defaults = list(node.args.defaults)
+    num_no_default = len(positional_args) - len(defaults)
+    for offset, arg in enumerate(visible_args):
+        pos_index = start_index + offset
+        if pos_index < num_no_default:
+            default_val, required = None, True
+        else:
+            default_val = _ann(defaults[pos_index - num_no_default])
+            required = False
+        params.append(
+            {
+                "name": arg.arg,
+                "annotation": _ann(arg.annotation),
+                "default": default_val,
+                "required": required,
+            }
+        )
+    for index, arg in enumerate(node.args.kwonlyargs):
+        default_val, required = _kwonly_param_default(node.args.kw_defaults, index)
+        params.append(
+            {
+                "name": arg.arg,
+                "annotation": _ann(arg.annotation),
+                "default": default_val,
+                "required": required,
+            }
+        )
+    returns = _ann(node.returns)
+    return_arity = _return_arity_from_annotation(returns)
+    if return_arity is None:
+        return_arity = _return_arity_from_body(node)
     return {
         "kind": "function",
-        "params": args,
-        "returns": _ann(node.returns),
+        "params": params,
+        "returns": returns,
+        "return_arity": return_arity,
         "async": isinstance(node, ast.AsyncFunctionDef),
     }
 
@@ -259,6 +339,136 @@ def _multi_export_module(contract):
     return int((contract or {}).get("raw_export_count") or 0) > 1
 
 
+def _primary_export_sig(contract):
+    if not isinstance(contract, dict) or not contract.get("plausible"):
+        return None, None
+    primary_name = contract.get("primary_name")
+    exports = contract.get("exports") or {}
+    if primary_name and primary_name in exports:
+        return primary_name, exports[primary_name]
+    if len(exports) == 1:
+        name = next(iter(exports))
+        return name, exports[name]
+    return primary_name, None
+
+
+def classify_io_delta(before, after):
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    if not before.get("plausible") or not after.get("plausible"):
+        return {
+            "action": "skip",
+            "reason": "unparseable ast",
+            "hints": {},
+        }
+    if _contract_is_ambiguous(before) or _contract_is_ambiguous(after):
+        return {
+            "action": "skip",
+            "reason": "ambiguous public exports",
+            "hints": {},
+        }
+
+    primary_name, before_sig = _primary_export_sig(before)
+    _, after_sig = _primary_export_sig(after)
+    if not primary_name or not isinstance(before_sig, dict) or not isinstance(after_sig, dict):
+        return {
+            "action": "skip",
+            "reason": "no primary export signature",
+            "hints": {},
+        }
+
+    before_params = before_sig.get("params") or []
+    after_params = after_sig.get("params") or []
+    before_by_name = {item["name"]: item for item in before_params if item.get("name")}
+    after_by_name = {item["name"]: item for item in after_params if item.get("name")}
+
+    removed_params = [name for name in before_by_name if name not in after_by_name]
+    added_required_params = [
+        item["name"]
+        for item in after_params
+        if item.get("name") not in before_by_name and item.get("required", True)
+    ]
+    added_optional_params = [
+        item["name"]
+        for item in after_params
+        if item.get("name") not in before_by_name and not item.get("required", True)
+    ]
+    became_required = [
+        name
+        for name, after_item in after_by_name.items()
+        if name in before_by_name
+        and not before_by_name[name].get("required", True)
+        and after_item.get("required", True)
+    ]
+
+    return_type_before = before_sig.get("returns")
+    return_type_after = after_sig.get("returns")
+    return_arity_before = before_sig.get("return_arity")
+    return_arity_after = after_sig.get("return_arity")
+    return_type_changed = return_type_before != return_type_after
+    return_arity_changed = (
+        return_arity_before is not None
+        and return_arity_after is not None
+        and return_arity_before != return_arity_after
+    )
+
+    hints = {
+        "primary_name": primary_name,
+        "added_required_params": added_required_params,
+        "added_optional_params": added_optional_params,
+        "removed_params": removed_params,
+        "became_required": became_required,
+        "return_type_before": return_type_before,
+        "return_type_after": return_type_after,
+        "return_arity_before": return_arity_before,
+        "return_arity_after": return_arity_after,
+    }
+
+    breaking = bool(
+        removed_params
+        or added_required_params
+        or became_required
+        or return_type_changed
+        or return_arity_changed
+    )
+    if breaking:
+        reason_parts = []
+        if added_required_params:
+            reason_parts.append("new required params")
+        if became_required:
+            reason_parts.append("params became required")
+        if removed_params:
+            reason_parts.append("removed params")
+        if return_type_changed:
+            reason_parts.append("return type changed")
+        if return_arity_changed:
+            reason_parts.append("return arity changed")
+        return {
+            "action": "update_callers",
+            "reason": ", ".join(reason_parts) or "breaking I/O change",
+            "hints": hints,
+        }
+
+    if set(before_by_name) == set(after_by_name):
+        if added_optional_params:
+            return {
+                "action": "skip",
+                "reason": "new optional params only",
+                "hints": hints,
+            }
+        return {
+            "action": "skip",
+            "reason": "no breaking I/O change",
+            "hints": hints,
+        }
+
+    return {
+        "action": "skip",
+        "reason": "non-breaking signature change",
+        "hints": hints,
+    }
+
+
 def output_format_changed(before, after):
     """
     Return (changed, reason, needs_llm).
@@ -341,5 +551,35 @@ if __name__ == "__main__":
     )
     changed, reason, needs_llm = output_format_changed(primary_changed_before, primary_changed_after)
     assert changed is True and needs_llm is True, (changed, reason, needs_llm)
+
+    optional_added = extract_public_contract(
+        "mod.py",
+        "def foo(x: int, y: int = 1) -> dict:\n    return {}\n",
+        "py",
+    )
+    delta_optional = classify_io_delta(before, optional_added)
+    assert delta_optional["action"] == "skip", delta_optional
+
+    required_added = extract_public_contract(
+        "mod.py",
+        "def foo(x: int, y: int) -> dict:\n    return {}\n",
+        "py",
+    )
+    delta_required = classify_io_delta(before, required_added)
+    assert delta_required["action"] == "update_callers", delta_required
+    assert "y" in delta_required["hints"]["added_required_params"]
+
+    tuple_before = extract_public_contract(
+        "mod.py",
+        "def foo() -> tuple[int, str]:\n    return 1, 'a'\n",
+        "py",
+    )
+    tuple_after = extract_public_contract(
+        "mod.py",
+        "def foo() -> tuple[int, str, bool]:\n    return 1, 'a', True\n",
+        "py",
+    )
+    delta_tuple = classify_io_delta(tuple_before, tuple_after)
+    assert delta_tuple["action"] == "update_callers", delta_tuple
 
     print("EXTRACT_PUBLIC_CONTRACT SELF TEST PASSED")

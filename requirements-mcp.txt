@@ -1,0 +1,2 @@
+# MCP HTTP gateway dependencies (separate from Gen2 core).
+mcp>=1.9,<2

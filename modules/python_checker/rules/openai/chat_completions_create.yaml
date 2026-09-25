@@ -1,0 +1,6 @@
+api: chat.completions.create
+required_kwargs:
+  - model
+  - messages
+effects:
+  nature: Unknown

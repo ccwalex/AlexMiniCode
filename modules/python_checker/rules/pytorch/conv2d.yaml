@@ -1,0 +1,3 @@
+api: torch.nn.Conv2d
+effects:
+  nature: Module

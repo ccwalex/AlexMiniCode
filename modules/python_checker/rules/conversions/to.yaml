@@ -1,0 +1,6 @@
+api: torch.Tensor.to
+kind: call
+accepts_nature:
+  - [Tensor]
+effects:
+  nature: Tensor

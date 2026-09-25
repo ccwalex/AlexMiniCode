@@ -9,11 +9,12 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 - **Planner–executor loop** — The main planner emits structured API calls (`/read`, `/write`, `/edit`, `/shell`, `/subagent`, `/request_feedback`, `/done`) that the backend executes in order.
 - **Structured code editing** — Parser-generated block tables for Python, TypeScript/Node, React TSX, and HTML. The model selects block IDs; the backend applies edits using deterministic line spans.
 - **Module metadata registry** — Tracked folders expose `MODULE_METADATA` summaries so the planner can discover available functions without reading every file.
-- **Subagent delegation** — Delegate bounded tasks to review or implement roles in isolated process workers. Review subagents can read, shell, and analyze in parallel; implement subagents run sequentially with full write/edit tools. Only summaries and changed artifact paths return to the main planner.
+- **Subagent delegation** — Delegate bounded tasks to review or implement roles in isolated process workers. Review subagents can read, shell, and analyze in parallel. Implement subagents run sequentially with write/edit tools and should only receive a finished, well-defined checklist (not open-ended design or diagnosis). Only summaries and changed artifact paths return to the main planner.
 - **Web GUI and job queue** — Submit tasks through a browser UI or JSON API. Jobs run one at a time through a sequential queue with logs and status polling.
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
 - **Dual LLM backends** — OpenCode Go subscription (default) or Cursor SDK (`cursor-sdk`) with per-role model configuration and fallback chains.
 - **Agent memory** — Persistent project context, plans, run history, and reasoning notes under `agent_memory/`.
+- **MCP HTTP gateway** — Optional Streamable-HTTP MCP server with real file download/upload and script tools for other agents/IDEs (`mcp_gateway/`, see [mcp_gateway/README.md](mcp_gateway/README.md)).
 
 ## Project layout
 
@@ -43,6 +44,7 @@ When you clone this repo, place its contents in `your-project/agent/`. Copy or i
 
 - Python 3.10+
 - [`requests`](https://pypi.org/project/requests/) — required for OpenCode LLM calls and the HTTP subagent client
+- [`PyYAML`](https://pypi.org/project/PyYAML/) and [`ruff`](https://pypi.org/project/ruff/) — required for vendored deterministic Python checking (`modules/python_checker/`)
 - [`cursor-sdk`](https://pypi.org/project/cursor-sdk/) — optional; required only when using the Cursor LLM backend
 
 ## Installation
@@ -52,10 +54,14 @@ When you clone this repo, place its contents in `your-project/agent/`. Copy or i
 git clone <repo-url> agent
 cd agent
 
-pip install requests
+pip install -r requirements.txt
 
 # Optional: enable Cursor SDK backend
 pip install cursor-sdk
+
+# Optional: MCP HTTP gateway (file download/upload + run_script tools)
+pip install -r requirements-mcp.txt
+# See mcp_gateway/README.md
 ```
 
 Set your OpenCode API key for the default backend:
@@ -89,9 +95,10 @@ print(result["success"], result["status"], result["reason"])
 
 ```bash
 python agent/gen2_web_gui_tracked.py --host 127.0.0.1 --port 7860
+# Also starts the Jupyter MCP gateway on port 7890 (use --no-mcp-gateway to skip)
 ```
 
-Open [http://127.0.0.1:7860/](http://127.0.0.1:7860/) in a browser to submit tasks, browse the file tree, and inspect job logs.
+Open [http://127.0.0.1:7860/](http://127.0.0.1:7860/) in a browser to submit tasks, browse the file tree, and inspect job logs. **Stop Agent** terminates the running job worker (SIGTERM, then SIGKILL), the same as stopping the script.
 
 ### Subagent API (HTTP)
 
@@ -160,7 +167,7 @@ Each planner turn produces a JSON array of API calls. The executor runs them seq
 | Request feedback | `/request_feedback` | `{}` |
 | Finish | `/done` | `{"summary": str}` |
 
-`/subagent` calls must form a trailing batch in a planner turn (optional `/request_feedback` after them). Review subagents run as isolated process workers in parallel; implement subagents run sequentially with write/edit access. In mixed batches, all review subagents run first in parallel, then implement subagents one at a time.
+`/subagent` calls must form a trailing batch in a planner turn (optional `/request_feedback` after them). Review subagents are isolated process workers with read/shell/scratchpad/drop_cache only; they run in parallel and may survey or reason. Implement subagents have full write/edit tools, run sequentially, and should execute a finished checklist only (exact paths, concrete edits, constraints, verify) — not open-ended diagnosis or design. Prefer parent `/write`/`/edit` for small localized patches after a clear review summary. In mixed batches, all review subagents run first in parallel, then implement subagents one at a time.
 
 ## Configuration
 

@@ -1,0 +1,6 @@
+api: pandas.Series.values
+kind: attr
+accepts_nature:
+  - [Series]
+effects:
+  nature: NdArray

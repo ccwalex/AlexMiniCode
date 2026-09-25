@@ -1,0 +1,6 @@
+api: torch.tensor
+kind: call
+accepts_nature:
+  - [List, NdArray, Scalar, Tensor]
+effects:
+  nature: Tensor

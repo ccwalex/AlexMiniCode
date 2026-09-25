@@ -1,4 +1,5 @@
 from build_debug_prompt_v2 import build_debug_prompt_v2
+from conflict import conflict_message, is_conflict_failure
 from build_feedback_context import (
     append_bounded,
     build_shell_feedback_context,
@@ -228,6 +229,26 @@ def execute_debug_v2(
     
     current_failed_call = failed_call
     current_failed_result = failed_result
+
+    if is_conflict_failure(call=failed_call, result=failed_result):
+        reason = conflict_message(call=failed_call, result=failed_result)
+        _print_debug_end(False, "failed", reason)
+        return {
+            "success": False,
+            "status": "failed",
+            "plan": [],
+            "results": [],
+            "run_state": run_state,
+            "read_cache": read_cache,
+            "outputs": "",
+            "reason": reason,
+            "conflict": True,
+            "conflict_output": (
+                failed_result.get("output")
+                if isinstance(failed_result, dict)
+                else None
+            ),
+        }
 
     _print_debug_start(
         task,

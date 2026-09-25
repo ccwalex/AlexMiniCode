@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "flybrain_agent": {
+      "url": "http://100.125.87.90:7192/proxy/7890/mcp",
+      "headers": {
+        "Authorization": "token ${env:JUPYTER_TOKEN}"
+      }
+    }
+  }
+}

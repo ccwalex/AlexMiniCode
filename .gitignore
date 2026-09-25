@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv-mcp/
 venv/
 env/
 
@@ -33,3 +34,4 @@ agent/
 **/agent/
 agent_memory/
 **/agent_memory/
+mcp_gateway.log

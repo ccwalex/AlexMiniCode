@@ -1,0 +1,6 @@
+api: torch.cat
+requires_nature:
+  - Tensor
+effects:
+  nature: Tensor
+shape: cat

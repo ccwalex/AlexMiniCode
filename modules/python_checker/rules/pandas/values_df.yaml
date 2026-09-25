@@ -1,0 +1,6 @@
+api: pandas.DataFrame.values
+kind: attr
+accepts_nature:
+  - [DataFrame]
+effects:
+  nature: NdArray

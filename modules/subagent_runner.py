@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
 
+from cfg import CFG
 from model_config import get_role_config
 from read_file import read_file
 from render_file_context import render_file_context
@@ -131,6 +132,34 @@ def _summary_result(*, success, role, status, summary, artifacts=None, run_id=No
     return result
 
 
+def _max_subagent_repair_loops():
+    try:
+        return max(1, int(getattr(CFG, "MAX_SUBAGENT_REPAIR_LOOPS", 10) or 10))
+    except Exception:
+        return 10
+
+
+def _build_repair_task(original_task, prior_result, attempt, max_loops):
+    parts = [str(original_task or "").strip(), ""]
+    parts.append("<prior_subagent_failure>")
+    parts.append(f"attempt: {attempt}/{max_loops}")
+    status = str((prior_result or {}).get("status") or "").strip()
+    if status:
+        parts.append(f"status: {status}")
+    error = str((prior_result or {}).get("error") or "").strip()
+    if error:
+        parts.append(f"error: {_text(error, 1000)}")
+    summary = str((prior_result or {}).get("summary") or "").strip()
+    if summary:
+        parts.append(f"summary: {_text(summary, 2000)}")
+    parts.append("</prior_subagent_failure>")
+    parts.append(
+        "A prior peer subagent with the same role failed. "
+        "Repair the failure above and complete the delegated task."
+    )
+    return "\n".join(parts)
+
+
 def _artifacts_from_result(result):
     state = result.get("run_state") if isinstance(result, dict) else None
     if not isinstance(state, dict):
@@ -146,6 +175,24 @@ def _artifacts_from_result(result):
     return artifacts
 
 
+def _delegation_rules_for_role(role):
+    role = normalize_subagent_role(role)
+    common = [
+        "Complete this task independently. Do not delegate to another subagent.",
+        "Be concise: use minimal output length; do not write for aesthetics.",
+    ]
+    if role == "implement":
+        return common + [
+            "You are an executor, not a planner: apply the closed checklist in <delegated_task>.",
+            "Do not reopen architecture, expand scope, or invent requirements.",
+            "If the brief is ambiguous or incomplete, end with /done summarizing what is missing; do not guess.",
+            "End with /done whose summary lists paths changed and verify result only.",
+        ]
+    return common + [
+        "End with /done whose summary is a brief, minimal result for the parent planner.",
+    ]
+
+
 def _run_process(task, role, files, timeout_seconds):
     file_context, read_errors = _load_file_context(files)
     task_parts = [
@@ -153,9 +200,7 @@ def _run_process(task, role, files, timeout_seconds):
         task,
         "</delegated_task>",
         "<delegation_rules>",
-        "Complete this task independently. Do not delegate to another subagent.",
-        "Be concise: use minimal output length; do not write for aesthetics.",
-        "End with /done whose summary is a brief, minimal result for the parent planner.",
+        *_delegation_rules_for_role(role),
         "</delegation_rules>",
     ]
     if file_context:
@@ -198,6 +243,9 @@ def _run_process(task, role, files, timeout_seconds):
         env = os.environ.copy()
         env["AGENT_SUBAGENT_DEPTH"] = "1"
         env["AGENT_SUBAGENT_ROLE"] = role
+        # Child stdout is captured separately; do not let the worker rewrite
+        # the parent job's steps.jsonl or rewritten_task.txt.
+        env.pop("GEN2_JOB_DIR", None)
         command = [
             sys.executable,
             "-u",
@@ -332,7 +380,38 @@ def run_subagent(task, role="review", files=None, timeout_seconds=SUBAGENT_DEFAU
     except Exception:
         timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
     files = files if isinstance(files, list) else []
-    return _run_process(task, role, files, timeout_seconds)
+
+    original_task = task
+    effective_task = task
+    max_repair_loops = _max_subagent_repair_loops()
+    last_result = None
+
+    for attempt in range(1, max_repair_loops + 1):
+        if attempt > 1:
+            print(
+                f"[Subagent] Repair attempt {attempt}/{max_repair_loops} (role={role})",
+                flush=True,
+            )
+
+        last_result = _run_process(effective_task, role, files, timeout_seconds)
+        if last_result.get("success"):
+            return last_result
+
+        status = str(last_result.get("status") or "").strip()
+        if status in {"rejected", "timed_out"}:
+            return last_result
+
+        if attempt >= max_repair_loops:
+            return last_result
+
+        effective_task = _build_repair_task(
+            original_task,
+            last_result,
+            attempt,
+            max_repair_loops,
+        )
+
+    return last_result
 
 
 def run_review_subagents_parallel(specs):

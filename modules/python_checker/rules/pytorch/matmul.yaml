@@ -1,0 +1,7 @@
+api: torch.matmul
+requires_nature:
+  - Tensor
+  - Tensor
+effects:
+  nature: Tensor
+shape: matmul

@@ -13,8 +13,8 @@ for path in (str(ROOT), str(MODULES)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from modules.extract_public_contract import extract_public_contract, output_format_changed
-from modules.find_module_dependents import find_module_dependents
+from modules.extract_public_contract import classify_io_delta, extract_public_contract, output_format_changed
+from modules.find_module_dependents import find_module_dependents, is_denied_dependency_path
 from modules.propagate_module_io_change import (
     flush_dependency_cascades,
     propagate_module_io_change,
@@ -129,12 +129,12 @@ class DependencyCascadeTests(unittest.TestCase):
         src = "def foo(x: int) -> dict:\n    return {}\n"
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents"
-        ) as grep, patch("modules.propagate_module_io_change.run_subagent") as llm:
+        ) as grep, patch("modules.propagate_module_io_change.limited_update_dependent") as limited:
             result = propagate_module_io_change("pkg/mod.py", src, src)
         self.assertFalse(result["changed"])
         self.assertFalse(result["grepped"])
         grep.assert_not_called()
-        llm.assert_not_called()
+        limited.assert_not_called()
 
     def test_helper_only_change_does_not_cascade(self):
         before = (
@@ -149,51 +149,74 @@ class DependencyCascadeTests(unittest.TestCase):
         )
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents"
-        ) as grep, patch("modules.propagate_module_io_change.run_subagent") as llm:
+        ) as grep, patch("modules.propagate_module_io_change.limited_update_dependent") as limited:
             result = propagate_module_io_change("pkg/mod.py", before, after)
         self.assertFalse(result["changed"])
         self.assertFalse(result["grepped"])
         grep.assert_not_called()
-        llm.assert_not_called()
+        limited.assert_not_called()
 
-    def test_changed_outputs_grep_and_implement(self):
+    def test_classify_io_delta_skips_optional_param(self):
+        before = extract_public_contract(
+            "mod.py",
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            "def foo(x: int, y: int = 1) -> dict:\n    return {}\n",
+            "py",
+        )
+        delta = classify_io_delta(before, after)
+        self.assertEqual(delta["action"], "skip")
+
+    def test_classify_io_delta_flags_required_param(self):
+        before = extract_public_contract(
+            "mod.py",
+            "def foo(x: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            "def foo(x: int, y: int) -> dict:\n    return {}\n",
+            "py",
+        )
+        delta = classify_io_delta(before, after)
+        self.assertEqual(delta["action"], "update_callers")
+        self.assertIn("y", delta["hints"]["added_required_params"])
+
+    def test_changed_outputs_grep_and_limited_edit(self):
         before = "def foo(x: int) -> dict:\n    return {}\n"
         after = "def foo(x: int) -> list:\n    return []\n"
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents",
             return_value=["app/use_foo.py"],
         ) as grep, patch(
-            "modules.propagate_module_io_change.run_subagent",
-            return_value={"success": True, "summary": "updated"},
-        ) as llm, patch(
+            "modules.propagate_module_io_change.limited_update_dependent",
+            return_value={"success": True, "escalate": False, "reason": "updated"},
+        ) as limited, patch(
             "modules.propagate_module_io_change.refresh_after_file_change"
         ), patch(
             "modules.propagate_module_io_change._read",
-            return_value="from mod import foo\n",
+            return_value="from mod import foo\n\ndef use():\n    return foo(1)\n",
         ):
             result = propagate_module_io_change("pkg/mod.py", before, after)
         self.assertTrue(result["changed"])
         self.assertTrue(result["grepped"])
         grep.assert_called_once_with("pkg/mod.py")
-        llm.assert_called()
-        roles = [
-            (call.kwargs.get("role") if call.kwargs else None)
-            or (call.args[1] if len(call.args) > 1 else None)
-            for call in llm.call_args_list
-        ]
-        self.assertIn("implement", roles)
+        limited.assert_called_once()
 
-    def test_unparseable_uses_llm_review_before_grep(self):
+    def test_unparseable_skips_without_review_or_grep(self):
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents"
         ) as grep, patch(
-            "modules.propagate_module_io_change.run_subagent",
-            return_value={"success": True, "summary": "NO\nunchanged"},
-        ) as llm:
+            "modules.propagate_module_io_change.limited_update_dependent"
+        ) as limited:
             result = propagate_module_io_change("ui/App.tsx", "not valid {", "still not valid {")
         self.assertFalse(result["changed"])
+        self.assertEqual(result["delta_action"], "skip")
         grep.assert_not_called()
-        self.assertEqual(llm.call_args.kwargs.get("role") or llm.call_args[1].get("role"), "review")
+        limited.assert_not_called()
 
     def test_recursion_cap(self):
         before = "def foo() -> dict:\n    return {}\n"
@@ -201,12 +224,12 @@ class DependencyCascadeTests(unittest.TestCase):
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents",
             return_value=["a.py"],
-        ), patch("modules.propagate_module_io_change.run_subagent") as llm, patch(
+        ), patch("modules.propagate_module_io_change.limited_update_dependent") as limited, patch(
             "modules.propagate_module_io_change.MAX_DEPTH", 0
         ):
             result = propagate_module_io_change("pkg/mod.py", before, after, depth=1)
         self.assertEqual(result["reason"], "max cascade depth")
-        llm.assert_not_called()
+        limited.assert_not_called()
 
     def test_queue_dedupes_same_path_and_flush_runs_once(self):
         run_state = RunState(task="demo")
@@ -235,7 +258,7 @@ class DependencyCascadeTests(unittest.TestCase):
         src = "def foo(x: int) -> dict:\n    return {}\n"
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents"
-        ), patch("modules.propagate_module_io_change.run_subagent"), patch(
+        ), patch("modules.propagate_module_io_change.limited_update_dependent"), patch(
             "modules.propagate_module_io_change._emit_dependency_substep"
         ) as emit_sub, patch("modules.propagate_module_io_change._maybe_start_parent_dependency") as emit_parent:
             result = propagate_module_io_change(
@@ -250,30 +273,19 @@ class DependencyCascadeTests(unittest.TestCase):
         emit_sub.assert_not_called()
         emit_parent.assert_not_called()
 
-    def test_review_path_emits_dependency_progress(self):
+    def test_denied_paths_skip_cascade(self):
+        self.assertTrue(is_denied_dependency_path("agent/hidden.py"))
+        self.assertTrue(is_denied_dependency_path("pkg/.ipynb_checkpoints/x.py"))
         with patch("modules.propagate_module_io_change.is_tracked", return_value=True), patch(
             "modules.propagate_module_io_change.find_module_dependents"
-        ) as grep, patch(
-            "modules.propagate_module_io_change.run_subagent",
-            return_value={"success": True, "summary": "NO\nunchanged"},
-        ), patch("modules.propagate_module_io_change._emit_dependency_substep") as emit_sub, patch(
-            "modules.propagate_module_io_change._maybe_start_parent_dependency"
-        ) as emit_parent:
+        ) as grep:
             result = propagate_module_io_change(
-                "ui/App.tsx",
-                "not valid {",
-                "still not valid {",
-                batch_id="batch-1",
-                progress_state={"parent_started": False, "llm_started": False},
+                "agent/mod.py",
+                "def foo() -> dict:\n    return {}\n",
+                "def foo() -> list:\n    return []\n",
             )
-        self.assertFalse(result["changed"])
-        self.assertTrue(result.get("llm_used"))
-        self.assertEqual(result.get("review_called"), 1)
+        self.assertEqual(result["reason"], "denied dependency path")
         grep.assert_not_called()
-        statuses = [call.args[2] for call in emit_sub.call_args_list]
-        self.assertEqual(statuses, ["running", "done"])
-        self.assertEqual(emit_sub.call_args_list[0].args[3], "dependency_review")
-        self.assertEqual(emit_parent.call_args_list[0].args[:2], ("batch-1", "ui/App.tsx"))
 
     def test_implement_path_emits_dependency_progress(self):
         before = "def foo(x: int) -> dict:\n    return {}\n"
@@ -282,11 +294,11 @@ class DependencyCascadeTests(unittest.TestCase):
             "modules.propagate_module_io_change.find_module_dependents",
             return_value=["app/use_foo.py"],
         ), patch(
-            "modules.propagate_module_io_change.run_subagent",
-            return_value={"success": True, "summary": "updated"},
+            "modules.propagate_module_io_change.limited_update_dependent",
+            return_value={"success": True, "escalate": False, "reason": "updated"},
         ), patch("modules.propagate_module_io_change.refresh_after_file_change"), patch(
             "modules.propagate_module_io_change._read",
-            return_value="from mod import foo\n",
+            return_value="from mod import foo\n\ndef use():\n    return foo(1)\n",
         ), patch("modules.propagate_module_io_change._emit_dependency_substep") as emit_sub, patch(
             "modules.propagate_module_io_change._maybe_start_parent_dependency"
         ) as emit_parent:
@@ -351,6 +363,51 @@ class DependencyCascadeTests(unittest.TestCase):
             [call.args[1] for call in emit_parent.call_args_list],
             ["running", "done"],
         )
+
+    def test_execute_api_plan_escalation_requests_feedback(self):
+        import modules.execute_api_plan as plan_module
+
+        run_state = RunState(task="demo")
+        run_state.pending_dependency_cascades = {
+            "pkg/mod.py": {"path": "pkg/mod.py", "pre_content": "before"},
+        }
+        with patch(
+            "modules.execute_api_plan.flush_dependency_cascades",
+            return_value=[
+                {
+                    "changed": True,
+                    "escalations": [
+                        {
+                            "path": "app/use_foo.py",
+                            "changed_path": "pkg/mod.py",
+                            "reason": "limited block edit insufficient",
+                            "hints": {"added_required_params": ["y"]},
+                        }
+                    ],
+                }
+            ],
+        ):
+            result = plan_module._finalize_plan_return(
+                run_state,
+                {"pkg/mod.py": "after"},
+                "batch-1",
+                {
+                    "success": True,
+                    "status": "done",
+                    "run_state": run_state,
+                    "read_cache": {"pkg/mod.py": "after"},
+                    "results": [],
+                    "failed_call": None,
+                    "failed_result": None,
+                    "feedback": None,
+                    "done": True,
+                    "conflict": False,
+                    "error": None,
+                },
+            )
+        self.assertEqual(result["status"], "request_feedback")
+        self.assertTrue(result.get("request_feedback"))
+        self.assertIn("dependency_escalate", result["feedback"])
 
     def test_execute_api_plan_flushes_dependency_cascade_at_end_of_turn(self):
         import modules.execute_api_plan as plan_module

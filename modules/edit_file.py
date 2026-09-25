@@ -123,7 +123,7 @@ def edit_file(path, edit_fns, code_type=None):
                 content,
                 mutation_log=[],
                 code_type=c_type,
-                use_llm=True,
+                use_llm=False,
             )
     
             if verify_res.get("approved"):
@@ -140,7 +140,10 @@ def edit_file(path, edit_fns, code_type=None):
                 "reconstructed_source": reconstructed,
                 "mutation_log": mutation_log,
                 "reason": f"Verification failed after repair attempts: {reason}",
+                "verify_mode": verify_res.get("verify_mode"),
             }
+
+    verify_mode = verify_res.get("verify_mode")
             
     write_success, write_msg = write_file(path, reconstructed, None)
     if not write_success:
@@ -159,5 +162,6 @@ def edit_file(path, edit_fns, code_type=None):
         "original_source": source,
         "reconstructed_source": reconstructed,
         "mutation_log": mutation_log,
-        "reason": "Edit applied successfully."
+        "reason": "Edit applied successfully.",
+        "verify_mode": verify_mode,
     }
