@@ -58,20 +58,6 @@ def build_write_verifier_prompt(
             return obj
         return json.dumps(obj, indent=2, ensure_ascii=False)
 
-    def build_metadata_example():
-        return '''MODULE_METADATA = {
-  "name": "module_name",
-  "type": "function or class",
-  "description": "what it does",
-  "functions": [
-    {
-      "name": "function_name",
-      "inputs": { "arg": "type" },
-      "outputs": "type"
-    }
-  ]
-}'''
-
     def load_modules_context():
         if registry_context_override is not None:
             return render_json_or_text(registry_context_override)
@@ -85,8 +71,6 @@ def build_write_verifier_prompt(
         if file_context_override is None:
             return ""
         return render_json_or_text(file_context_override)
-
-    metadata_example = build_metadata_example()
 
     principles = read_memory_text("agent_memory/core/principles.md")
     modules = load_modules_context()

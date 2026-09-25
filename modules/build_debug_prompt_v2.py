@@ -175,19 +175,6 @@ def build_debug_prompt_v2(
                 "</feedback_context_error>"
             )
 
-    metadata_example = '''MODULE_METADATA = {
-  "name": "module_name",
-  "type": "function or class",
-  "description": "what it does",
-  "functions": [
-    {
-      "name": "function_name",
-      "inputs": { "arg": "type, shape of input" },
-      "outputs": "type, shape of output"
-    }
-  ]
-}'''
-
     system_prompt = f'''
 {SYSTEM_PROMPT_OVERRIDE_BLOCK}
 

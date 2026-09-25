@@ -36,19 +36,6 @@ def build_debug_prompt(
         ok, content = read_file(path)
         return content if ok else ""
 
-    metadata_example = '''MODULE_METADATA = {
-  "name": "module_name",
-  "type": "function or class",
-  "description": "what it does",
-  "functions": [
-    {
-      "name": "function_name",
-      "inputs": { "arg": "type" },
-      "outputs": "type"
-    }
-  ]
-}'''
-
     principles = safe_read("agent_memory/core/principles.md")
     memory = safe_read("agent_memory/reasoning/llm_memory.json")
     failure_log = safe_read("agent_memory/reasoning/failures.md")
@@ -151,16 +138,12 @@ Remember to use this for any read_file actions
 <codebase_rules>
 - Main scripts must be placed in code/.
 - Reusable modules must be placed in code/modules/.
-- Each code/modules/*.py file must include top-level MODULE_METADATA.
+- Module metadata is maintained separately by the meta_writer pipeline after file changes; do not embed metadata dictionaries in source files.
 - Module files must be fully overwritten when changed.
 - Do not output diffs or line patches.
 - Use write_file for file creation/modification.
 - Use run_shell only for execution or inspection.
 - Do not use shell redirection for file writes.
-
-Metadata format:
-
-{metadata_example}
 </codebase_rules>
 
 <output_format>

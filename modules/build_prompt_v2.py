@@ -408,6 +408,7 @@ Correct output example:
 - For model/domain files, use the existing model/domain directory when one exists.
 - Files inside code/modules/ import other py modules directly: from xxx import xxx.
 - Scripts outside code/modules/ may use: from modules.xxx import xxx if the code source directory is on sys.path.
+- Module metadata is maintained separately by the meta_writer pipeline after file changes; do not embed metadata dictionaries in source files.
 - Use /write for full file creation/overwrite.
 - Use /edit for structured edits of existing larger files only when the change is localized and the block target is clear.
 - Use /shell only for execution, validation, or inspection.

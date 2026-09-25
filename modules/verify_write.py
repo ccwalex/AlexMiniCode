@@ -158,20 +158,7 @@ if __name__ == "__main__":
 
     _checker = sys.modules["deterministic_code_checker"]
 
-    valid_module = """MODULE_METADATA = {
-    "name": "dummy_func",
-    "type": "function",
-    "description": "dummy",
-    "functions": [
-        {
-            "name": "dummy_func",
-            "inputs": {},
-            "outputs": "None"
-        }
-    ]
-}
-
-def dummy_func():
+    valid_module = """def dummy_func():
     pass
 """
 
@@ -205,13 +192,10 @@ def dummy_func():
         assert res1["content_hash"] is not None
         assert res1["metadata"] is None
 
-        missing_meta = """def dummy_func():
-    pass
-"""
-        res3 = verify_write("code/modules/missing.py", missing_meta, use_llm=False)
-        assert res3["approved"] is False
+        res3 = verify_write("code/modules/missing.py", valid_module, use_llm=False)
+        assert res3["approved"] is True
 
-        res4 = verify_write("code/example.py", missing_meta, use_llm=False)
+        res4 = verify_write("code/example.py", valid_module, use_llm=False)
         assert res4["approved"] is True
 
     with patch.object(_checker, "_get_check_source", return_value=_fake_error):

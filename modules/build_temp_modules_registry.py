@@ -1,53 +1,45 @@
-import json
-
-from read_file import read_file
-from extract_module_metadata_from_content import extract_module_metadata_from_content
-from validate_module_metadata import validate_module_metadata
+from load_registry_metadata import (
+    load_metadata_json,
+    lookup_metadata_by_source_path,
+    modules_list_from_registry,
+    resolve_module_metadata,
+)
 
 
 MODULE_METADATA = {
     "name": "build_temp_modules_registry",
     "type": "function",
-    "description": "Build a temporary module registry by overlaying successful executed module write_file steps on top of a persistent registry file.",
+    "description": "Build a temporary module registry by overlaying successful executed module write_file steps on top of meta_writer sidecar metadata.",
     "functions": [
         {
             "name": "build_temp_modules_registry",
             "inputs": {
                 "executed_trace": "list of execution trace dicts containing step, success, and output fields",
-                "registry_path": "str project-relative path to persistent module registry JSON, default agent_memory/core/modules.json"
+                "registry_path": "str project-relative path to metadata.json, default agent_memory/core/metadata.json",
             },
-            "outputs": "dict with key modules containing persistent registry entries overlaid by valid successful module writes from executed_trace"
+            "outputs": "dict with key modules containing persistent registry entries overlaid by valid successful module writes from executed_trace",
         }
-    ]
+    ],
 }
 
 
 def build_temp_modules_registry(
     executed_trace,
-    registry_path="agent_memory/core/modules.json",
+    registry_path="agent_memory/core/metadata.json",
 ):
     """
-    Build temporary module registry from a persistent registry plus
+    Build temporary module registry from meta_writer sidecars plus
     successful module write_file actions in executed_trace.
 
     Latest successful write per module path wins.
     """
 
-    def safe_read(path):
-        ok, content = read_file(path)
-        return content if ok else ""
-
-    try:
-        persistent = json.loads(safe_read(registry_path))
-    except Exception:
-        persistent = {"modules": []}
-
-    by_path = {}
-
-    for m in persistent.get("modules", []):
-        path = m.get("path")
-        if path:
-            by_path[path] = m
+    registry = load_metadata_json(registry_path)
+    by_path = {
+        entry.get("path"): entry
+        for entry in modules_list_from_registry(registry)
+        if entry.get("path")
+    }
 
     for item in executed_trace:
         if not item.get("success"):
@@ -64,23 +56,14 @@ def build_temp_modules_registry(
         if not (path.startswith("code/modules/") and path.endswith(".py")):
             continue
 
-        meta, err = extract_module_metadata_from_content(content)
+        entry = lookup_metadata_by_source_path(registry, path)
+        if not entry:
+            entry = resolve_module_metadata(path, content=content, registry=registry)
 
-        if err:
+        if not entry:
             continue
 
-        ok, _ = validate_module_metadata(meta)
-
-        if not ok:
-            continue
-
-        by_path[path] = {
-            "name": meta.get("name"),
-            "type": meta.get("type"),
-            "description": meta.get("description"),
-            "functions": meta.get("functions", []),
-            "path": path,
-        }
+        by_path[path] = entry
 
     return {
         "modules": sorted(

@@ -8,7 +8,7 @@ The agent ships with a web GUI, an HTTP subagent API, Cursor SDK integration, an
 
 - **Planner–executor loop** — The main planner emits structured API calls (`/read`, `/write`, `/edit`, `/shell`, `/subagent`, `/request_feedback`, `/done`) that the backend executes in order.
 - **Structured code editing** — Parser-generated block tables for Python, TypeScript/Node, React TSX, and HTML. The model selects block IDs; the backend applies edits using deterministic line spans.
-- **Module metadata registry** — Tracked folders expose `MODULE_METADATA` summaries so the planner can discover available functions without reading every file.
+- **Module metadata registry** — Tracked folders get metadata sidecars written by the meta_writer pipeline (`agent_memory/meta/` → `metadata.json`) so the planner can discover available functions without reading every file.
 - **Subagent delegation** — Delegate bounded tasks to review or implement roles in isolated process workers. Review subagents can read, shell, and analyze in parallel. Implement subagents run sequentially with write/edit tools and should only receive a finished, well-defined checklist (not open-ended design or diagnosis). Only summaries and changed artifact paths return to the main planner.
 - **Web GUI and job queue** — Submit tasks through a browser UI or JSON API. Jobs run one at a time through a sequential queue with logs and status polling.
 - **Discussion mode** — Multi-turn conversations to resolve planning conflicts by revising `project.md` and `current_plan.md`.
