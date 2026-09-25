@@ -169,8 +169,12 @@ class SubagentDelegationTests(unittest.TestCase):
 
             def __init__(self, command):
                 self.command = command
+                self.task_text = ""
 
             def wait(self, timeout=None):
+                config_path = Path(self.command[self.command.index("--config") + 1])
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                self.task_text = str(config.get("task") or "")
                 result_path = Path(self.command[self.command.index("--result") + 1])
                 result_path.write_text(
                     json.dumps(
@@ -192,8 +196,10 @@ class SubagentDelegationTests(unittest.TestCase):
         captured = {}
 
         def fake_popen(command, **kwargs):
+            process = FakeProcess(command)
+            captured["process"] = process
             captured.update(kwargs)
-            return FakeProcess(command)
+            return process
 
         with patch.dict(os.environ, {"GEN2_JOB_DIR": "/tmp/parent-job"}), patch.object(
             runner.subprocess, "Popen", side_effect=fake_popen
@@ -212,7 +218,8 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(captured["env"]["AGENT_SUBAGENT_ROLE"], "implement")
         self.assertNotIn("GEN2_JOB_DIR", captured["env"])
         self.assertTrue(captured["start_new_session"])
-
+        self.assertIn("You are an executor, not a planner", captured["process"].task_text)
+        self.assertIn("ambiguous or incomplete", captured["process"].task_text)
     def test_process_timeout_terminates_child_process_group(self):
         class HangingProcess:
             pid = 4321
@@ -396,7 +403,20 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("implement role", parent_prompt)
         self.assertIn("Subagents are context-isolated", parent_prompt)
         self.assertIn("Review /subagent is the default for inspection", parent_prompt)
+        self.assertIn("Executor only", parent_prompt)
+        self.assertIn("closed checklist", parent_prompt)
+        self.assertIn("well-defined, low-reasoning write checklist", parent_prompt)
         self.assertNotIn("modify less than 3 files", parent_prompt)
+
+    def test_implement_child_prompt_frames_executor_not_planner(self):
+        with patch.dict(
+            os.environ,
+            {"AGENT_SUBAGENT_DEPTH": "1", "AGENT_SUBAGENT_ROLE": "implement"},
+        ):
+            implement_prompt, _ = prompt_module.build_prompt_v2("task")
+        self.assertIn("executor, not a planner", implement_prompt)
+        self.assertIn("ambiguous or incomplete", implement_prompt)
+        self.assertNotIn("5. /subagent", implement_prompt)
 
     def test_per_job_role_overrides_apply_to_subagent_roles(self):
         with role_override_scope(
