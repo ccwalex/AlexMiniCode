@@ -98,7 +98,7 @@ python agent/gen2_web_gui_tracked.py --host 127.0.0.1 --port 7860
 # Also starts the Jupyter MCP gateway on port 7890 (use --no-mcp-gateway to skip)
 ```
 
-Open [http://127.0.0.1:7860/](http://127.0.0.1:7860/) in a browser to submit tasks, browse the file tree, and inspect job logs.
+Open [http://127.0.0.1:7860/](http://127.0.0.1:7860/) in a browser to submit tasks, browse the file tree, and inspect job logs. **Stop Agent** terminates the running job worker (SIGTERM, then SIGKILL), the same as stopping the script.
 
 ### Subagent API (HTTP)
 

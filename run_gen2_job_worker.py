@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import json
 import os
+import signal
 import sys
 import time
 import traceback
@@ -109,6 +110,51 @@ class Tee:
             stream.flush()
 
 
+def signal_name(signum):
+    if signum == signal.SIGINT:
+        return "SIGINT"
+    if hasattr(signal, "SIGTERM") and signum == signal.SIGTERM:
+        return "SIGTERM"
+    return f"signal {signum}"
+
+
+def write_cancelled_result(job_dir, signum):
+    job_dir = Path(job_dir).resolve()
+    signame = signal_name(signum)
+    reason = f"terminated by user ({signame})"
+    payload = {
+        "success": False,
+        "status": "cancelled",
+        "reason": reason,
+    }
+    write_json(job_dir / "result.json", payload)
+    update_status(
+        job_dir,
+        status="cancelled",
+        success=False,
+        ended_at=utc_now(),
+        reason=reason,
+    )
+    return reason
+
+
+def install_cancel_handlers(job_dir):
+    job_dir = Path(job_dir).resolve()
+    handled = {"done": False}
+
+    def handle(signum, _frame):
+        if handled["done"]:
+            raise SystemExit(128 + (signum % 128))
+        handled["done"] = True
+        reason = write_cancelled_result(job_dir, signum)
+        print(f"\n[JOB CANCELLED] {reason}", flush=True)
+        raise SystemExit(128 + (signum % 128))
+
+    signal.signal(signal.SIGINT, handle)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, handle)
+
+
 def run_job(job_dir):
     project_root, source_dir, modules_dir = setup_paths()
 
@@ -127,6 +173,8 @@ def run_job(job_dir):
 
     if not task:
         raise RuntimeError("Job config missing task")
+
+    install_cancel_handlers(job_dir)
 
     from modules.run_task_v2 import run_task_v2
 
@@ -208,6 +256,9 @@ def main():
 
     try:
         return run_job(job_dir)
+
+    except SystemExit:
+        raise
 
     except Exception as e:
         tb = traceback.format_exc()

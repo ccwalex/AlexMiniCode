@@ -112,7 +112,8 @@ button:disabled{opacity:.55;cursor:wait}
 Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes.</textarea>
-<button onclick="submitJob()">Submit</button>
+<button id="submitJobBtn" onclick="submitJob()">Submit</button>
+<button id="stopAgentBtn" class="danger" onclick="stopCurrentJob()" disabled>Stop Agent</button>
 <button class="secondary" onclick="refreshContext()">Refresh</button>
 <h2>Git</h2>
 <button class="secondary" onclick="gitAction('status')">Status</button>
@@ -905,12 +906,44 @@ function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=
 
 async function initAgent(){systemStatus.textContent=JSON.stringify(await api('/api/init',{method:'POST'}),null,2);await refreshEverything()}
 async function refreshAllRegistries(){systemStatus.textContent=JSON.stringify(await api('/api/refresh_all_registries',{method:'POST'}),null,2);await loadRegistryContexts()}
-async function stopCurrentJob(){if(!confirm('Stop the current running job?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_current_job',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop current failed:\n'+e.stack}}
+function updateAgentRunningState(current){
+  const btn=document.getElementById('stopAgentBtn');
+  if(!btn)return;
+  if(current&&current.job_id){
+    btn.disabled=false;
+    const id=String(current.job_id);
+    const shortId=id.length>22?id.slice(0,22)+'…':id;
+    btn.textContent=`Stop Agent (${shortId})`;
+  }else{
+    btn.disabled=true;
+    btn.textContent='Stop Agent';
+  }
+}
+async function stopCurrentJob(){
+  if(!confirm('Terminate the running agent? This stops the job like ending the script.'))return;
+  const btn=document.getElementById('stopAgentBtn');
+  const prev=btn?btn.textContent:'Stop Agent';
+  if(btn){btn.disabled=true;btn.textContent='Stopping...'}
+  try{
+    systemStatus.textContent=JSON.stringify(await api('/api/stop_current_job',{method:'POST'}),null,2);
+    await refreshEverything();
+  }catch(e){
+    systemStatus.textContent='Stop failed:\n'+e.stack;
+  }finally{
+    if(btn)btn.textContent=prev;
+  }
+}
 async function restartCurrentJob(){if(!confirm('Stop and restart the current running job?'))return;try{const d=await api('/api/restart_current_job',{method:'POST'});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart current failed:\n'+e.stack}}
 async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.');return}if(!confirm('Restart selected job as a new job?'))return;try{const d=await api('/api/restart_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:selectedJob})});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart selected failed:\n'+e.stack}}
 async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
 async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups],role_overrides:collectJobRoleOverrides()};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
-async function refreshEverything(){try{await api('/api/tick',{method:'POST'})}catch(e){}await loadJobs();if(selectedJob)await loadJob(selectedJob)}
+async function refreshEverything(){
+  let tick=null;
+  try{tick=await api('/api/tick',{method:'POST'})}catch(e){}
+  updateAgentRunningState(tick?.current);
+  await loadJobs();
+  if(selectedJob)await loadJob(selectedJob);
+}
 async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
 async function loadJobs(){const arr=await api('/api/jobs');jobs.innerHTML=arr.map(j=>`<div class="job ${j.job_id===selectedJob?'selected':''}" onclick="selectJob('${esc(j.job_id)}')"><b>${esc(j.job_id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`).join('')||'<div class="job">No jobs.</div>'}
 async function selectJob(id){selectedJob=id;await loadJobs();await loadJob(id)}
