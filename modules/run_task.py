@@ -180,8 +180,9 @@ def run_task(
                     )
 
                     repaired = repair_write_step(
-                        step=step,
-                        rejection_reason=last_repair_reason,
+                        step.get("path"),
+                        step.get("content", ""),
+                        last_repair_reason,
                         modules_override=temp_modules_registry,
                     )
 

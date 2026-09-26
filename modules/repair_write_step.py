@@ -22,6 +22,66 @@ MODULE_METADATA = {
 }
 
 
+def _strip_code_fences(text):
+    text = str(text).strip()
+    if not text.startswith("```"):
+        return text
+
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _parse_json_object(text):
+    text = _strip_code_fences(text)
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except Exception:
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_repaired_file_content(llm_response):
+    if not isinstance(llm_response, dict):
+        return None, f"repair model returned non-dict response: {str(llm_response)[:300]}"
+
+    raw = llm_response.get("content")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, f"repair model response missing content: {str(llm_response)[:300]}"
+
+    parsed = _parse_json_object(raw)
+    if isinstance(parsed, dict) and isinstance(parsed.get("content"), str):
+        inner = parsed["content"]
+        if not inner:
+            return None, "repair model returned empty content"
+        return inner, None
+
+    stripped = raw.strip()
+    if stripped.lstrip().startswith("{") and '"content"' in stripped[:200]:
+        return None, f"could not parse repair JSON: {stripped[:300]}"
+
+    return raw, None
+
+
 def repair_write_step(path, content, rejection_reason, modules_override=None):
     """
     Repair a rejected write_file step.
@@ -42,20 +102,6 @@ def repair_write_step(path, content, rejection_reason, modules_override=None):
     def safe_read(path):
         ok, content = read_file(path)
         return content if ok else ""
-    """
-    if step.get("action") != "write_file":
-        return {
-            "success": False,
-            "reason": "repair_write_step only supports write_file actions",
-        }
-
-    if "content" not in step:
-        return {
-            "success": False,
-            "reason": "write_file step missing content",
-        }
-    """
-    
 
     principles = safe_read("agent_memory/core/principles.md")
     memory = safe_read("agent_memory/reasoning/llm_memory.json")
@@ -137,33 +183,41 @@ Return ONLY:
         max_tokens=8192,
     )
 
-    if not isinstance(repaired, dict):
+    repaired_content, error = _extract_repaired_file_content(repaired)
+    if error:
         return {
             "success": False,
-            "reason": f"repair model returned non-dict response: {str(repaired)[:300]}",
-        }
-
-    if "content" not in repaired:
-        return {
-            "success": False,
-            "reason": f"repair model response missing content: {str(repaired)[:300]}",
-        }
-
-    repaired_content = repaired["content"]
-
-    if not isinstance(repaired_content, str):
-        return {
-            "success": False,
-            "reason": "repair model content is not a string",
-        }
-
-    if not repaired_content:
-        return {
-            "success": False,
-            "reason": "repair model returned empty content",
+            "reason": error,
         }
 
     return {
         "success": True,
         "content": repaired_content,
     }
+
+
+if __name__ == "__main__":
+    inner = "def foo():\n    return 1\n"
+    wrapped = json.dumps({"content": inner})
+
+    content, error = _extract_repaired_file_content({"content": wrapped})
+    assert error is None, error
+    assert content == inner, content
+
+    bare, error = _extract_repaired_file_content({"content": inner})
+    assert error is None, error
+    assert bare == inner, bare
+
+    fenced, error = _extract_repaired_file_content(
+        {"content": f"```json\n{wrapped}\n```"}
+    )
+    assert error is None, error
+    assert fenced == inner, fenced
+
+    bad, error = _extract_repaired_file_content(
+        {"content": '{"content": "broken json'}
+    )
+    assert bad is None, bad
+    assert error is not None
+
+    print("REPAIR_WRITE_STEP SELF TEST PASSED")
