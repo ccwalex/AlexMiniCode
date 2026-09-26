@@ -405,7 +405,8 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertIn("Review /subagent is the default for inspection", parent_prompt)
         self.assertIn("Executor only", parent_prompt)
         self.assertIn("closed checklist", parent_prompt)
-        self.assertIn("well-defined, low-reasoning write checklist", parent_prompt)
+        self.assertIn("Spawn implement /subagent sparingly", parent_prompt)
+        self.assertIn("zero reasoning", parent_prompt)
         self.assertNotIn("modify less than 3 files", parent_prompt)
 
     def test_implement_child_prompt_frames_executor_not_planner(self):

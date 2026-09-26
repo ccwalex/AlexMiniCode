@@ -281,6 +281,7 @@ def build_prompt_v2(
 
 Use to delegate one or more self-contained tasks. Each call blocks until its concise result returns.
 Default to review /subagent for inspection, tracing, comparison, and large-file reading. Do not wait until the task is already large.
+Default to parent /write or /edit for code changes; spawn implement /subagent only when every edit is already fully specified and needs zero reasoning.
 Parent /read is for files you will edit next, not for surveying unknown code.
 When several areas must be surveyed, split trailing review /subagent calls instead of a long parent /read batch.
 All review /subagent calls in one trailing batch run in parallel; implement subagents run sequentially.
@@ -305,17 +306,18 @@ review role:
 - May survey and reason; attach starting files in files; the subagent may /read additional paths itself.
 
 implement role:
+- LAST RESORT for writes — default to parent /write or /edit instead.
+- Reserve only for mechanical execution with zero reasoning: every path, per-file edit, constraint, and verify step must already be decided by the parent.
 - Isolated process worker with full tools except nested /subagent.
 - Can /read, /write, /edit, /shell, /scratchpad, /drop_cache.
-- Executor only: run a finished, well-defined checklist. Do not use for diagnosis, design, or open-ended "figure out how to X".
-- Use only after the parent (or a prior review summary) has already decided what to change.
-- Brief must be a closed checklist: exact paths, concrete edits or write intent, constraints, and how to verify.
-- Prefer parent /write or /edit for small/localized patches after a clear review summary.
+- Executor only: apply a finished, line-item checklist blindly. Do not use for diagnosis, design, trade-offs, or open-ended "figure out how to X".
+- Do NOT spawn when any judgment, interpretation, or design choice is still required — keep that work on the parent (or use review first).
+- Brief must be a closed checklist: exact paths, concrete per-file edits or write intent, constraints, and how to verify — no open questions.
 - Ends with /done; parent receives the /done summary and successful write/edit paths.
 
 Payload:
 {
-  "task": "self-contained brief: for review = goal/findings deliverable; for implement = closed checklist of paths, edits, constraints, verify",
+  "task": "self-contained brief: for review = goal/findings deliverable; for implement = predetermined line-item checklist only (paths, per-file edits, constraints, verify) — no reasoning left",
   "role": "review|implement",
   "files": ["paths/the/subagent/needs.py"],
   "timeout_seconds": 1200
@@ -324,14 +326,15 @@ Payload:
 Tailoring rules:
 - Write task as if for a colleague with no prior chat history.
 - For review: include an explicit deliverable (bullet findings, path list, root cause, patch plan, or verdict).
-- For implement: include exact paths, concrete change instructions, constraints, and a verify step — not hypotheses or open questions.
-- If work still needs diagnosis, design, or multi-option reasoning, use review or keep it on the parent; do not delegate implement yet.
+- For implement: spawn only when no reasoning remains — include exact paths, per-file change instructions, constraints, and verify with zero ambiguity.
+- If work still needs diagnosis, design, interpretation, or multi-option reasoning, use review or parent /write|/edit; do not spawn implement.
 - Attach starting files in files; review subagents may /read neighbors as needed.
 - Paste short critical facts from parent /shell or prior findings into task; do not assume the subagent saw them.
 - Split parallel review batches by area (e.g. backend vs frontend), not duplicate overlapping file sets.
 - Prefer a review /subagent before parent /read whenever more than one file, or one large file, must be surveyed.
 
 Batch rules:
+- Emit 0-1 implement /subagent per task in most cases; only when edits are fully predetermined and mechanical.
 - Emit 1-8 focused review /subagent calls in one trailing batch; use several when work spans multiple areas.
 - /subagent may follow /read or inspection /shell in the same turn; do not stop at /request_feedback first.
 - Only optional /request_feedback may follow /subagent calls in the same turn.
@@ -510,10 +513,10 @@ Rules:
 <delegation_rules>
 - Review /subagent is the default for inspection, survey, and reasoning. Use it even when you expect to edit only one or two files later.
 - When a task spans multiple modules or needs cross-file diagnosis, emit a trailing review /subagent batch first.
-- Keep parent turns for synthesis, decisions, small edits, and validation; push file-heavy reading into review subagents.
-- After review summaries return, /read only the few files you must edit directly on the parent, or delegate implement only with a finished checklist.
-- Use implement /subagent only for a well-defined, low-reasoning write checklist (exact paths, concrete edits, constraints, verify) — never for open-ended design or diagnosis.
-- Prefer parent /write or /edit for small/localized patches after a clear review summary.
+- Keep parent turns for synthesis, decisions, edits, and validation; push file-heavy reading into review subagents.
+- Default to parent /write or /edit for nearly all code changes, including after review summaries return.
+- Spawn implement /subagent sparingly — only when every edit is predetermined and mechanical (exact paths, per-file edits, constraints, verify) with zero reasoning required. Never for design, diagnosis, trade-offs, or ambiguous work.
+- If unsure whether reasoning is still needed, do not spawn implement; use parent /write or /edit instead.
 - Subagents are context-isolated: put needed file paths in files and needed facts/constraints/deliverables in task.
 - For review subagents, files is the starting context; they may /read additional paths.
 </delegation_rules>
