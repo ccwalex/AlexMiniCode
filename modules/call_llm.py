@@ -134,12 +134,6 @@ def call_llm_role(
     from cursor_model_selection import normalize_cursor_params
 
     cfg = get_role_config(role)
-    from model_config import get_job_llm_source, normalize_llm_source
-
-    if not normalize_llm_source(source):
-        job_source = get_job_llm_source()
-        if job_source:
-            source = job_source
 
     source = str(source or cfg.get("source") or "opencode").strip().lower()
     model = model if model is not None else cfg.get("model")
