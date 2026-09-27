@@ -15,7 +15,14 @@ from contextvars import copy_context
 from pathlib import Path
 
 from cfg import CFG
-from model_config import get_role_config
+from model_config import (
+    _default_role_config,
+    _normalize_role_entry,
+    get_job_llm_config,
+    get_role_config,
+    load_model_config,
+    normalize_llm_source,
+)
 from read_file import read_file
 from render_file_context import render_file_context
 from subagent_capabilities import normalize_subagent_role
@@ -186,6 +193,55 @@ def _artifacts_from_result(result):
     return artifacts
 
 
+def _saved_role_defaults(role_name: str) -> dict:
+    config = load_model_config()
+    entry = config.get("roles", {}).get(role_name)
+    if isinstance(entry, dict):
+        return _normalize_role_entry(entry, role_name)
+    return _default_role_config(role_name)
+
+
+def _resolve_subagent_llm_settings(role: str) -> dict:
+    role_name = ROLE_CONFIGS[role]
+    role_cfg = get_role_config(role_name)
+    job_cfg = get_job_llm_config()
+    saved_defaults = _saved_role_defaults(role_name)
+
+    role_model = str(role_cfg.get("model") or "").strip()
+    job_model = str(job_cfg.get("model") or "").strip()
+    default_model = str(saved_defaults.get("model") or "").strip()
+    role_source = normalize_llm_source(role_cfg.get("source"))
+    job_source = normalize_llm_source(job_cfg.get("llm_source"))
+    default_source = normalize_llm_source(saved_defaults.get("source"))
+
+    role_source_customized = bool(
+        role_source and default_source and role_source != default_source
+    )
+    role_model_customized = bool(
+        role_model and default_model and role_model != default_model
+    )
+
+    if role_source_customized or role_model_customized:
+        model = role_model
+        llm_source = role_source or job_source or "opencode"
+        cursor_params = role_cfg.get("cursor_params")
+    else:
+        model = job_model or role_model
+        llm_source = job_source or role_source or "opencode"
+        cursor_params = job_cfg.get("cursor_params") or role_cfg.get("cursor_params")
+
+    if llm_source != "cursor":
+        cursor_params = None
+
+    return {
+        "model": model,
+        "llm_source": llm_source,
+        "effort": role_cfg.get("effort"),
+        "max_tokens": role_cfg.get("max_tokens"),
+        "cursor_params": cursor_params,
+    }
+
+
 def _delegation_rules_for_role(role):
     role = normalize_subagent_role(role)
     common = [
@@ -219,7 +275,7 @@ def _run_process(task, role, files, timeout_seconds):
     if read_errors:
         task_parts.extend(["<file_errors>", "\n".join(read_errors), "</file_errors>"])
 
-    role_cfg = get_role_config(ROLE_CONFIGS[role])
+    llm_settings = _resolve_subagent_llm_settings(role)
     run_id = "subagent_" + uuid.uuid4().hex[:12]
     worker = Path(__file__).resolve().parent.parent / "run_subagent_worker.py"
     if not worker.exists():
@@ -238,18 +294,28 @@ def _run_process(task, role, files, timeout_seconds):
         result_path = temp_path / "result.json"
         stdout_path = temp_path / "stdout.log"
         stderr_path = temp_path / "stderr.log"
+        from model_config import _role_overrides
+
         config = {
             "task": "\n".join(task_parts),
             "role": role,
-            "model": role_cfg.get("model"),
-            "effort": role_cfg.get("effort"),
-            "llm_source": role_cfg.get("source"),
-            "cursor_params": role_cfg.get("cursor_params"),
-            "max_tokens": role_cfg.get("max_tokens"),
+            "model": llm_settings.get("model"),
+            "effort": llm_settings.get("effort"),
+            "llm_source": llm_settings.get("llm_source"),
+            "cursor_params": llm_settings.get("cursor_params"),
+            "max_tokens": llm_settings.get("max_tokens"),
             "max_iterations": 10,
             "max_feedback_loops": 6,
             "max_retries": 2,
         }
+        overrides = _role_overrides.get()
+        if overrides:
+            config["role_overrides"] = overrides
+        print(
+            f"[Subagent] spawn role={role} llm_source={llm_settings.get('llm_source')} "
+            f"model={llm_settings.get('model')}",
+            flush=True,
+        )
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = os.environ.copy()
         env["AGENT_SUBAGENT_DEPTH"] = "1"

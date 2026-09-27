@@ -54,7 +54,7 @@ from scratchpad import Scratchpad
 from run_state import RunState
 from append_run import append_run
 from preview import preview
-from model_config import get_role_config, role_override_scope
+from model_config import get_role_config, job_llm_config_scope, normalize_llm_source, role_override_scope
 from opencode_session import opencode_job_scope, opencode_session_scope, session_for
 
 
@@ -239,20 +239,32 @@ def run_task_v2(
 ):
     with role_override_scope(role_overrides):
         with opencode_job_scope(job_id):
-            return _run_task_v2(
-                task,
-                max_tokens=max_tokens,
-                model=model,
-                effort=effort,
-                llm_source=llm_source,
-                cursor_params=cursor_params,
-                shell_instruction_prompt=shell_instruction_prompt,
-                max_iterations=max_iterations,
-                max_feedback_loops=max_feedback_loops,
-                max_retries=max_retries,
-                skip_task_rewrite=skip_task_rewrite,
-                job_id=job_id,
+            planner_cfg = get_role_config("main_planner")
+            resolved_source = (
+                normalize_llm_source(llm_source)
+                or normalize_llm_source(planner_cfg.get("source"))
+                or "opencode"
             )
+            resolved_model = str(model or planner_cfg.get("model") or "").strip()
+            with job_llm_config_scope(
+                llm_source=resolved_source,
+                model=resolved_model,
+                cursor_params=cursor_params,
+            ):
+                return _run_task_v2(
+                    task,
+                    max_tokens=max_tokens,
+                    model=model,
+                    effort=effort,
+                    llm_source=llm_source,
+                    cursor_params=cursor_params,
+                    shell_instruction_prompt=shell_instruction_prompt,
+                    max_iterations=max_iterations,
+                    max_feedback_loops=max_feedback_loops,
+                    max_retries=max_retries,
+                    skip_task_rewrite=skip_task_rewrite,
+                    job_id=job_id,
+                )
 
 
 def _run_task_v2(

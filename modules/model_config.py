@@ -88,6 +88,12 @@ _role_overrides: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "llm_role_overrides",
     default=None,
 )
+_job_llm_config: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "job_llm_config",
+    default=None,
+)
+
+
 def _config_path() -> Path:
     return Path(safe_path(CONFIG_REL_PATH))
 
@@ -303,6 +309,29 @@ def role_override_scope(overrides: dict | None):
         _role_overrides.reset(token)
 
 
+@contextmanager
+def job_llm_config_scope(llm_source=None, model=None, cursor_params=None):
+    config = {}
+    normalized_source = normalize_llm_source(llm_source)
+    if normalized_source:
+        config["llm_source"] = normalized_source
+    model_text = str(model or "").strip()
+    if model_text:
+        config["model"] = model_text
+    if isinstance(cursor_params, list) and cursor_params:
+        config["cursor_params"] = cursor_params
+    token = _job_llm_config.set(config or None)
+    try:
+        yield config
+    finally:
+        _job_llm_config.reset(token)
+
+
+def get_job_llm_config() -> dict:
+    current = _job_llm_config.get()
+    return dict(current) if isinstance(current, dict) else {}
+
+
 def get_role_config(role: str) -> dict:
     role = str(role or "").strip()
     if role not in LLM_ROLES:
@@ -372,6 +401,11 @@ if __name__ == "__main__":
     assert normalize_llm_source("opencode") == "opencode"
     assert normalize_llm_source("relay") == "opencode"
     assert normalize_llm_source("") is None
+    with job_llm_config_scope(llm_source="opencode", model="job-model"):
+        job_cfg = get_job_llm_config()
+        assert job_cfg["llm_source"] == "opencode"
+        assert job_cfg["model"] == "job-model"
+    assert get_job_llm_config() == {}
     saved = save_model_config(cfg)
     assert saved["roles"]["debug"]["model"] == "deepseek-v4-flash"
     empty_model = save_model_config(

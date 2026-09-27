@@ -65,6 +65,7 @@ def main():
             max_iterations=config.get("max_iterations"),
             max_feedback_loops=config.get("max_feedback_loops"),
             max_retries=config.get("max_retries"),
+            role_overrides=config.get("role_overrides"),
         )
         _write_result(args.result, result)
         return 0 if isinstance(result, dict) and result.get("success") else 1
