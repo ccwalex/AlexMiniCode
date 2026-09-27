@@ -185,6 +185,16 @@ def _print_debug_end(success, status, reason):
     print("=" * 72 + "\n")
 
 
+def _resolve_debug_model(job_model, debug_cfg) -> str:
+    configured = str((debug_cfg or {}).get("model") or "").strip()
+    if configured:
+        return configured
+    job = str(job_model or "").strip()
+    if job:
+        return job
+    return str((debug_cfg or {}).get("model") or "").strip()
+
+
 def execute_debug_v2(
     task,
     failed_call,
@@ -195,6 +205,8 @@ def execute_debug_v2(
     max_tokens=None,
     model=None,
     effort=None,
+    llm_source=None,
+    cursor_params=None,
     max_debug_iterations=None,
     main_scratchpad=None,
     main_plan_calls=None,
@@ -213,8 +225,12 @@ def execute_debug_v2(
 
     debug_cfg = get_role_config("debug")
     max_tokens = max_tokens if max_tokens is not None else debug_cfg["max_tokens"]
-    model = model if model is not None else debug_cfg["model"]
+    model = _resolve_debug_model(model, debug_cfg)
     effort = effort if effort is not None else debug_cfg["effort"]
+    if llm_source is None:
+        llm_source = debug_cfg.get("source")
+    if cursor_params is None:
+        cursor_params = debug_cfg.get("cursor_params")
     if max_debug_iterations is None:
         max_debug_iterations = getattr(CFG, "MAX_DEBUG_ITERATIONS", 3)
 
@@ -308,6 +324,8 @@ def execute_debug_v2(
             max_tokens=max_tokens,
             thinking=final_effort,
             model=model,
+            source=llm_source,
+            cursor_params=cursor_params,
             timeout=None,
             session_id=session_for("debug"),
         )

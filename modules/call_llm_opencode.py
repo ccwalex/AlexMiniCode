@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from cfg import CFG
 from model_config import normalize_effort
@@ -66,8 +67,35 @@ def _normalize_messages(messages) -> list[dict[str, str]]:
             continue
         role = str(item.get("role") or "user").strip() or "user"
         content = str(item.get("content") or "")
+        # Drop lone UTF-16 surrogates that can break strict JSON encoders.
+        content = content.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
         out.append({"role": role, "content": content})
     return out
+
+
+def _clamp_output_tokens(max_tokens: int, api_entry: dict | None) -> int:
+    limit = 0
+    if isinstance(api_entry, dict):
+        raw_limit = api_entry.get("limit")
+        if isinstance(raw_limit, dict):
+            try:
+                limit = int(raw_limit.get("output") or 0)
+            except Exception:
+                limit = 0
+    value = int(max_tokens)
+    if limit > 0:
+        value = min(value, limit)
+    return max(1, value)
+
+
+def _responses_system_role(model_id: str) -> str:
+    model_id = str(model_id or "").strip().lower()
+    if model_id.startswith("o"):
+        return "developer"
+    match = re.match(r"^gpt-(\d+)", model_id)
+    if match and int(match.group(1)) >= 5:
+        return "developer"
+    return "system"
 
 
 def _apply_reasoning(payload: dict, thinking: str, reasoning_options) -> None:
@@ -147,10 +175,10 @@ def _build_chat_payload(model_id: str, messages, max_tokens: int, thinking: str,
     return payload
 
 
-def _to_responses_input(messages) -> tuple[list[dict], str]:
-    """Build Responses API input and optional instructions from chat messages."""
+def _split_responses_messages(messages, model_id: str) -> tuple[str, list[dict]]:
     instructions_parts: list[str] = []
     input_items: list[dict] = []
+    system_role = _responses_system_role(model_id)
 
     for item in messages:
         role = item["role"]
@@ -172,7 +200,7 @@ def _to_responses_input(messages) -> tuple[list[dict], str]:
         input_items.append({"role": role, "content": content})
 
     instructions = "\n\n".join(part for part in instructions_parts if part).strip()
-    return input_items, instructions
+    return instructions, input_items
 
 
 def _build_responses_payload(
@@ -182,18 +210,71 @@ def _build_responses_payload(
     thinking: str,
     api_entry,
     session_id: str,
+    *,
+    system_mode: str = "input",
+    include_reasoning: bool = True,
+    include_prompt_cache_key: bool = True,
 ) -> dict:
-    input_items, instructions = _to_responses_input(messages)
+    instructions, input_items = _split_responses_messages(messages, model_id)
     payload = {
         "model": model_id,
         "input": input_items,
-        "max_output_tokens": int(max_tokens),
-        "prompt_cache_key": sanitize_session_id(session_id),
+        "max_output_tokens": _clamp_output_tokens(max_tokens, api_entry),
     }
+    if include_prompt_cache_key:
+        payload["prompt_cache_key"] = sanitize_session_id(session_id)
+
     if instructions:
-        payload["instructions"] = instructions
-    _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
+        if system_mode == "instructions":
+            payload["instructions"] = instructions
+        else:
+            payload["input"] = [
+                {"role": _responses_system_role(model_id), "content": instructions},
+                *input_items,
+            ]
+
+    if include_reasoning:
+        _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
     return payload
+
+
+def _responses_payload_variants(
+    model_id: str,
+    messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+    session_id: str,
+) -> list[tuple[str, dict]]:
+    variants: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    def _add(label: str, **kwargs):
+        payload = _build_responses_payload(
+            model_id,
+            messages,
+            max_tokens,
+            thinking,
+            api_entry,
+            session_id,
+            **kwargs,
+        )
+        key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append((label, payload))
+
+    _add("input-system")
+    _add("instructions", system_mode="instructions")
+    _add("input-system-no-reasoning", include_reasoning=False)
+    _add("instructions-no-reasoning", system_mode="instructions", include_reasoning=False)
+    _add(
+        "input-system-no-cache",
+        include_reasoning=False,
+        include_prompt_cache_key=False,
+    )
+    return variants
 
 
 def _extract_chat_text(payload: dict) -> str:
@@ -281,6 +362,16 @@ class OpenCodeEndpointMismatch(RuntimeError):
         )
 
 
+class OpenCodeBadRequest(RuntimeError):
+    def __init__(self, status_code: int, url: str, body: str):
+        self.status_code = status_code
+        self.url = url
+        self.body = body
+        super().__init__(
+            f"OpenCode bad request ({status_code}) for {url}: {body[:500]}"
+        )
+
+
 def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None):
     try:
         import requests
@@ -303,6 +394,8 @@ def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None)
         )
     if response.status_code in (404, 405):
         raise OpenCodeEndpointMismatch(response.status_code, url, response.text)
+    if response.status_code == 400:
+        raise OpenCodeBadRequest(response.status_code, url, response.text)
     response.raise_for_status()
     return response.json()
 
@@ -338,16 +431,29 @@ def _dispatch_transport(
         raw = _post_opencode(endpoint_path, payload, headers, timeout)
         text = _extract_messages_text(raw)
     elif transport == "responses":
-        payload = _build_responses_payload(
+        last_bad_request = None
+        for label, payload in _responses_payload_variants(
             model_id,
             normalized_messages,
             max_tokens,
             thinking,
             api_entry,
             session,
-        )
-        raw = _post_opencode(endpoint_path, payload, headers, timeout)
-        text = _extract_responses_text(raw)
+        ):
+            try:
+                raw = _post_opencode(endpoint_path, payload, headers, timeout)
+                if label != "input-system":
+                    print(
+                        f"[OpenCode] {model_id}: responses payload '{label}' succeeded "
+                        f"after earlier variant was rejected"
+                    )
+                text = _extract_responses_text(raw)
+                break
+            except OpenCodeBadRequest as exc:
+                last_bad_request = exc
+                continue
+        else:
+            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode responses request failed")
     else:
         payload = _build_chat_payload(
             model_id,
@@ -442,10 +548,22 @@ if __name__ == "__main__":
         "job-1:planner",
     )
     assert resp_payload["prompt_cache_key"] == "job-1:planner"
-    assert resp_payload["instructions"] == "s"
-    assert resp_payload["input"] == [
-        {"role": "user", "content": [{"type": "input_text", "text": "u"}]}
-    ]
+    assert resp_payload["input"][0]["role"] == "developer"
+    assert resp_payload["input"][0]["content"] == "s"
+    assert resp_payload["input"][1] == {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "u"}],
+    }
+    muse_payload = _build_responses_payload(
+        "muse-spark-1.3-contributor",
+        msgs,
+        100,
+        "medium",
+        {"reasoning_options": [{"type": "effort", "values": ["low", "medium"]}]},
+        "job-1:debug",
+    )
+    assert muse_payload["input"][0]["role"] == "system"
+    assert len(_responses_payload_variants("muse-spark-1.3-contributor", msgs, 100, "medium", {}, "job-1:debug")) >= 3
 
     headers = build_opencode_headers("job-1:planner")
     assert headers["x-opencode-session"] == "job-1:planner"
