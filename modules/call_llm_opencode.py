@@ -147,23 +147,32 @@ def _build_chat_payload(model_id: str, messages, max_tokens: int, thinking: str,
     return payload
 
 
-def _to_responses_input(messages) -> list[dict]:
-    out = []
+def _to_responses_input(messages) -> tuple[list[dict], str]:
+    """Build Responses API input and optional instructions from chat messages."""
+    instructions_parts: list[str] = []
+    input_items: list[dict] = []
+
     for item in messages:
         role = item["role"]
-        content_type = "input_text" if role in ("user", "system") else "output_text"
-        out.append(
-            {
-                "role": role,
-                "content": [
-                    {
-                        "type": content_type,
-                        "text": item["content"],
-                    }
-                ],
-            }
-        )
-    return out
+        content = item["content"]
+        if role == "system":
+            instructions_parts.append(content)
+            continue
+        if role == "user":
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": content}],
+                }
+            )
+            continue
+        if role == "assistant":
+            input_items.append({"role": "assistant", "content": content})
+            continue
+        input_items.append({"role": role, "content": content})
+
+    instructions = "\n\n".join(part for part in instructions_parts if part).strip()
+    return input_items, instructions
 
 
 def _build_responses_payload(
@@ -174,12 +183,15 @@ def _build_responses_payload(
     api_entry,
     session_id: str,
 ) -> dict:
+    input_items, instructions = _to_responses_input(messages)
     payload = {
         "model": model_id,
-        "input": _to_responses_input(messages),
+        "input": input_items,
         "max_output_tokens": int(max_tokens),
         "prompt_cache_key": sanitize_session_id(session_id),
     }
+    if instructions:
+        payload["instructions"] = instructions
     _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
     return payload
 
@@ -430,6 +442,10 @@ if __name__ == "__main__":
         "job-1:planner",
     )
     assert resp_payload["prompt_cache_key"] == "job-1:planner"
+    assert resp_payload["instructions"] == "s"
+    assert resp_payload["input"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "u"}]}
+    ]
 
     headers = build_opencode_headers("job-1:planner")
     assert headers["x-opencode-session"] == "job-1:planner"
