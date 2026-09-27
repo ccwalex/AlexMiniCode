@@ -176,12 +176,100 @@ def resolve_transport_entry(model_id: str, api_entry: dict | None = None) -> dic
 
 
 def resolve_transport(model_id: str) -> str:
+    model_id = normalize_model_id(model_id)
+    if model_id in GO_TRANSPORT_REGISTRY:
+        return GO_TRANSPORT_REGISTRY[model_id]
+
     catalog = get_model_catalog()
-    entry = catalog.get(normalize_model_id(model_id))
+    entry = catalog.get(model_id)
     if entry:
         return str(entry["transport"])
-    resolved = resolve_transport_entry(model_id)
-    return str(resolved["transport"])
+    return str(resolve_transport_entry(model_id)["transport"])
+
+
+def resolve_transport_routing(model_id: str, api_entry: dict | None = None) -> dict[str, str]:
+    model_id = normalize_model_id(model_id)
+    if api_entry is None:
+        api_entry = get_model_catalog().get(model_id)
+    return resolve_transport_entry(model_id, api_entry)
+
+
+def _job_uses_opencode() -> bool:
+    from model_config import LLM_ROLES, PARSE_FALLBACK_KINDS, get_parse_fallback, get_role_config
+
+    for role in LLM_ROLES:
+        if str(get_role_config(role).get("source") or "").strip().lower() == "opencode":
+            return True
+    for kind in PARSE_FALLBACK_KINDS:
+        if str(get_parse_fallback(kind).get("source") or "").strip().lower() == "opencode":
+            return True
+    return False
+
+
+def preflight_opencode_role_models() -> dict[str, Any]:
+    """
+    Warm the model catalog once and validate transport routing for every configured
+    OpenCode role (planner, debug, verifier, parse fallbacks, etc.).
+    """
+    from model_config import LLM_ROLES, PARSE_FALLBACK_KINDS, get_parse_fallback, get_role_config
+
+    catalog = get_model_catalog()
+    roles_checked: list[dict[str, str]] = []
+    issues: list[dict[str, str]] = []
+    by_transport: dict[str, list[str]] = {"chat": [], "responses": [], "messages": []}
+
+    def _check(scope: str, label: str, cfg: dict) -> None:
+        if str(cfg.get("source") or "").strip().lower() != "opencode":
+            return
+        model_id = normalize_model_id(cfg.get("model"))
+        if not model_id:
+            return
+        routing = resolve_transport_entry(model_id, catalog.get(model_id))
+        item = {
+            "scope": scope,
+            "label": label,
+            "model_id": model_id,
+            "transport": routing["transport"],
+            "endpoint_path": routing["endpoint_path"],
+            "transport_source": routing["transport_source"],
+        }
+        roles_checked.append(item)
+        by_transport.setdefault(routing["transport"], []).append(model_id)
+        if routing["transport_source"] != "docs":
+            issues.append(item)
+
+    for role in LLM_ROLES:
+        _check("role", role, get_role_config(role))
+    for kind in PARSE_FALLBACK_KINDS:
+        _check("parse_fallback", kind, get_parse_fallback(kind))
+
+    if roles_checked:
+        summary = ", ".join(
+            f"{item['scope']}:{item['label']}={item['model_id']}/{item['transport']}"
+            for item in roles_checked
+        )
+        print(
+            f"[OpenCode] Preflight transport routing for {len(roles_checked)} "
+            f"configured model(s): {summary}"
+        )
+    for item in issues:
+        print(
+            f"[OpenCode] Preflight warning: {item['scope']} '{item['label']}' model "
+            f"'{item['model_id']}' uses inferred transport '{item['transport']}' "
+            f"(source={item['transport_source']})"
+        )
+
+    return {
+        "roles_checked": roles_checked,
+        "issues": issues,
+        "by_transport": by_transport,
+    }
+
+
+def maybe_preflight_opencode_role_models() -> dict[str, Any] | None:
+    if not _job_uses_opencode():
+        return None
+    return preflight_opencode_role_models()
 
 
 def _opencode_request_headers() -> dict[str, str]:
@@ -370,5 +458,10 @@ if __name__ == "__main__":
     assert "chat" in audit["by_transport"]
     assert "responses" in audit["by_transport"]
     assert "messages" in audit["by_transport"]
+
+    assert resolve_transport("deepseek-v4-flash") == "chat"
+    assert resolve_transport("grok-4.7") == "responses"
+    preflight = preflight_opencode_role_models()
+    assert "roles_checked" in preflight
 
     print("OPENCODE_REGISTRY SELF TEST PASSED")

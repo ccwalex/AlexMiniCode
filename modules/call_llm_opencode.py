@@ -12,9 +12,10 @@ from model_config import normalize_effort
 from opencode_registry import (
     DEFAULT_OPENCODE_MODEL,
     get_opencode_go_base,
+    get_model_catalog,
     normalize_model_id,
     resolve_endpoint_path,
-    resolve_transport,
+    resolve_transport_routing,
 )
 from opencode_session import get_opencode_session, sanitize_session_id
 
@@ -358,14 +359,13 @@ def call_llm_opencode(
 ):
     model_id = normalize_model_id(model) or DEFAULT_OPENCODE_MODEL
     session = sanitize_session_id(session_id or get_opencode_session())
-    primary_transport = resolve_transport(model_id)
     normalized_messages = _normalize_messages(messages)
     if not normalized_messages:
         raise ValueError("messages must contain at least one item")
 
-    from opencode_registry import get_model_catalog
-
     api_entry = get_model_catalog().get(model_id, {})
+    routing = resolve_transport_routing(model_id, api_entry)
+    primary_transport = routing["transport"]
     headers = build_opencode_headers(session)
 
     last_mismatch = None

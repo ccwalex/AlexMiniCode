@@ -302,6 +302,10 @@ def _run_task_v2(
 
     ensure_memory_files()
 
+    from opencode_registry import maybe_preflight_opencode_role_models
+
+    maybe_preflight_opencode_role_models()
+
     run_state = RunState(task=task)
     read_cache = {}
     attached_paths = []
