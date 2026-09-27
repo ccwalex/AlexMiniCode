@@ -244,6 +244,7 @@ Do not allow shell redirection for file writes.</textarea>
 <input id="ocApiKey" type="password" placeholder="optional">
 </div>
 <div class="small" style="margin-top:8px">Key status: <span id="ocKeyStatus">not configured</span></div>
+<div id="ocTransportAudit" class="small muted" style="margin-top:8px"></div>
 <label class="small"><input type="checkbox" id="ocClearKey"> Clear saved API key</label>
 <button class="good" onclick="saveOpenCodeConfig()">Save</button>
 <button class="secondary" onclick="closeOpenCodeConfig()">Close</button>
@@ -733,11 +734,32 @@ function closeModelConfig(){
   modelConfigModal.classList.remove('open');
 }
 
+function renderOpenCodeTransportAudit(audit){
+  const box=document.getElementById('ocTransportAudit');
+  if(!box) return;
+  if(!audit){
+    box.textContent='';
+    return;
+  }
+  const counts=audit.counts||{};
+  const inferred=(audit.inferred||[]).map(m=>m.id);
+  const lines=[
+    `Transport map: chat ${counts.chat||0}, responses ${counts.responses||0}, messages ${counts.messages||0}.`,
+  ];
+  if(inferred.length){
+    lines.push(`Inferred routing for ${inferred.length} model(s): ${inferred.join(', ')}.`);
+  }else{
+    lines.push('All live models use documented transport routing.');
+  }
+  box.textContent=lines.join(' ');
+}
+
 function applyOpenCodeState(state){
   opencodeState=state||{};
   const cfg=opencodeState.config||{};
   document.getElementById('ocApiKey').value='';
   document.getElementById('ocKeyStatus').textContent=cfg.api_key_configured?`configured (${cfg.api_key_masked||'saved'})`:'not configured';
+  renderOpenCodeTransportAudit(opencodeState.transport_audit);
 }
 
 async function openOpenCodeConfig(){

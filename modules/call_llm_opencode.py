@@ -258,6 +258,16 @@ def _log_cache_usage(payload: dict, model_id: str, transport: str) -> None:
         print(f"[OpenCode] {model_id} ({transport}) usage: " + ", ".join(cache_bits))
 
 
+class OpenCodeEndpointMismatch(RuntimeError):
+    def __init__(self, status_code: int, url: str, body: str):
+        self.status_code = status_code
+        self.url = url
+        self.body = body
+        super().__init__(
+            f"OpenCode endpoint mismatch ({status_code}) for {url}: {body[:300]}"
+        )
+
+
 def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None):
     try:
         import requests
@@ -279,34 +289,31 @@ def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None)
             f"OpenCode quota exceeded for request ({response.status_code}): {response.text[:300]}"
         )
     if response.status_code in (404, 405):
-        raise RuntimeError(
-            f"OpenCode endpoint mismatch ({response.status_code}) for {url}: {response.text[:300]}"
-        )
+        raise OpenCodeEndpointMismatch(response.status_code, url, response.text)
     response.raise_for_status()
     return response.json()
 
 
-def call_llm_opencode(
-    messages,
-    model=None,
-    thinking="medium",
-    max_tokens=8192,
-    timeout=None,
-    session_id=None,
+_TRANSPORT_FALLBACK_ORDER = ("chat", "responses", "messages")
+
+
+def _candidate_transports(primary: str) -> list[str]:
+    primary = str(primary or "chat").strip().lower()
+    return [primary] + [t for t in _TRANSPORT_FALLBACK_ORDER if t != primary]
+
+
+def _dispatch_transport(
+    transport: str,
+    model_id: str,
+    normalized_messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+    session: str,
+    headers: dict,
+    timeout: int | None,
 ):
-    model_id = normalize_model_id(model) or DEFAULT_OPENCODE_MODEL
-    session = sanitize_session_id(session_id or get_opencode_session())
-    transport = resolve_transport(model_id)
     endpoint_path = resolve_endpoint_path(transport)
-    normalized_messages = _normalize_messages(messages)
-    if not normalized_messages:
-        raise ValueError("messages must contain at least one item")
-
-    from opencode_registry import get_model_catalog
-
-    api_entry = get_model_catalog().get(model_id, {})
-    headers = build_opencode_headers(session)
-
     if transport == "messages":
         payload = _build_messages_payload(
             model_id,
@@ -338,6 +345,58 @@ def call_llm_opencode(
         )
         raw = _post_opencode(endpoint_path, payload, headers, timeout)
         text = _extract_chat_text(raw)
+    return text, raw, transport, endpoint_path
+
+
+def call_llm_opencode(
+    messages,
+    model=None,
+    thinking="medium",
+    max_tokens=8192,
+    timeout=None,
+    session_id=None,
+):
+    model_id = normalize_model_id(model) or DEFAULT_OPENCODE_MODEL
+    session = sanitize_session_id(session_id or get_opencode_session())
+    primary_transport = resolve_transport(model_id)
+    normalized_messages = _normalize_messages(messages)
+    if not normalized_messages:
+        raise ValueError("messages must contain at least one item")
+
+    from opencode_registry import get_model_catalog
+
+    api_entry = get_model_catalog().get(model_id, {})
+    headers = build_opencode_headers(session)
+
+    last_mismatch = None
+    text = ""
+    raw = {}
+    transport = primary_transport
+    endpoint_path = resolve_endpoint_path(transport)
+    for candidate in _candidate_transports(primary_transport):
+        try:
+            text, raw, transport, endpoint_path = _dispatch_transport(
+                candidate,
+                model_id,
+                normalized_messages,
+                max_tokens,
+                thinking,
+                api_entry,
+                session,
+                headers,
+                timeout,
+            )
+            if candidate != primary_transport:
+                print(
+                    f"[OpenCode] {model_id}: retried with transport "
+                    f"'{candidate}' after '{primary_transport}' endpoint mismatch"
+                )
+            break
+        except OpenCodeEndpointMismatch as exc:
+            last_mismatch = exc
+            continue
+    else:
+        raise RuntimeError(str(last_mismatch) if last_mismatch else "OpenCode request failed")
 
     _log_cache_usage(raw if isinstance(raw, dict) else {}, model_id, transport)
 

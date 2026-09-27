@@ -38,10 +38,15 @@ TRANSPORT_ENDPOINTS = {
 
 # Extracted from https://opencode.ai/docs/go/#endpoints
 GO_TRANSPORT_REGISTRY: dict[str, str] = {
+    # responses — @ai-sdk/openai
+    "grok-4.7": "responses",
     "grok-4.6": "responses",
+    "grok-4.5": "responses",
+    "gpt-6-luna": "responses",
     "gpt-5.6-luna": "responses",
     "muse-spark-1.3-contributor": "responses",
     "muse-spark-1.2-contributor": "responses",
+    # messages — @ai-sdk/anthropic
     "minimax-m3": "messages",
     "minimax-m2.7": "messages",
     "minimax-m2.5": "messages",
@@ -50,22 +55,35 @@ GO_TRANSPORT_REGISTRY: dict[str, str] = {
     "qwen3.7-max": "messages",
     "qwen3.7-plus": "messages",
     "qwen3.6-plus": "messages",
+    "qwen3.5-plus": "messages",
+    # chat — @ai-sdk/openai-compatible
     "glm-5.3-flash": "chat",
     "glm-5.3": "chat",
     "glm-5.2": "chat",
     "glm-5.1": "chat",
+    "glm-5": "chat",
     "kimi-k3": "chat",
     "kimi-k2.7-code": "chat",
     "kimi-k2.6": "chat",
+    "kimi-k2.5": "chat",
     "longcat-2.0": "chat",
+    "longcat-2.5-preview-free": "chat",
     "deepseek-v4.1-flash": "chat",
     "deepseek-v4-pro": "chat",
     "deepseek-v4-flash": "chat",
     "deepseek-v4-flash-vision-exp": "chat",
+    "deepseek-flash": "chat",
+    "mimo-v2.6-flash": "chat",
+    "mimo-v2.6-pro": "chat",
     "mimo-v2.5": "chat",
     "mimo-v2.5-pro": "chat",
+    "mimo-v2-pro": "chat",
+    "mimo-v2-omni": "chat",
     "hy4-preview": "chat",
+    "hy3-preview": "chat",
     "hy3": "chat",
+    "space-bunny-free": "chat",
+    "omen-alpha": "chat",
 }
 
 _NPM_TRANSPORT = {
@@ -262,6 +280,38 @@ def validate_catalog(catalog: dict[str, dict]) -> list[str]:
     return warnings
 
 
+def audit_opencode_transports(force_refresh: bool = False) -> dict[str, Any]:
+    """Group live models by transport and flag any that still rely on inference."""
+    catalog = get_model_catalog(force_refresh=force_refresh)
+    by_transport: dict[str, list[dict[str, str]]] = {
+        "chat": [],
+        "responses": [],
+        "messages": [],
+    }
+    inferred: list[dict[str, str]] = []
+
+    for model_id in sorted(catalog):
+        entry = catalog[model_id]
+        transport = str(entry.get("transport") or "chat")
+        item = {
+            "id": model_id,
+            "transport": transport,
+            "endpoint_path": str(entry.get("endpoint_path") or resolve_endpoint_path(transport)),
+            "transport_source": str(entry.get("transport_source") or "unknown"),
+        }
+        by_transport.setdefault(transport, []).append(item)
+        if item["transport_source"] != "docs":
+            inferred.append(item)
+
+    return {
+        "by_transport": by_transport,
+        "inferred": inferred,
+        "warnings": validate_catalog(catalog),
+        "counts": {transport: len(items) for transport, items in by_transport.items()},
+        "total": len(catalog),
+    }
+
+
 def fetch_opencode_models(force_refresh: bool = False) -> list[dict[str, Any]]:
     global _catalog_cache, _catalog_fetched_at
 
@@ -281,9 +331,6 @@ def fetch_opencode_models(force_refresh: bool = False) -> list[dict[str, Any]]:
     catalog: dict[str, dict] = {}
     for model_id in live_ids:
         catalog[model_id] = _build_catalog_entry(model_id, api_models.get(model_id))
-
-    for warning in validate_catalog(catalog):
-        print(f"[OpenCode] {warning}")
 
     _catalog_cache = catalog
     _catalog_fetched_at = time.time()
@@ -312,5 +359,16 @@ if __name__ == "__main__":
     assert sample["transport"] == "chat"
     assert sample["endpoint_path"] == "/chat/completions"
     assert sample["transport_source"] == "docs"
+
+    assert resolve_transport_entry("grok-4.7")["transport"] == "responses"
+    assert resolve_transport_entry("gpt-6-luna")["transport"] == "responses"
+    assert resolve_transport_entry("mimo-v2.6-flash")["transport"] == "chat"
+    assert resolve_transport_entry("space-bunny-free")["transport"] == "chat"
+
+    audit = audit_opencode_transports()
+    assert "by_transport" in audit
+    assert "chat" in audit["by_transport"]
+    assert "responses" in audit["by_transport"]
+    assert "messages" in audit["by_transport"]
 
     print("OPENCODE_REGISTRY SELF TEST PASSED")

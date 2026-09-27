@@ -1098,10 +1098,12 @@ def git_action(data):
 def opencode_bootstrap_api():
     ensure_module_path()
     from modules.opencode_config import load_opencode_config, public_opencode_config
+    from modules.opencode_registry import audit_opencode_transports
 
     return {
         "success": True,
         "config": public_opencode_config(load_opencode_config()),
+        "transport_audit": audit_opencode_transports(),
     }
 
 
