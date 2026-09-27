@@ -166,13 +166,22 @@ def resolve_transport(model_id: str) -> str:
     return str(resolved["transport"])
 
 
+def _opencode_request_headers() -> dict[str, str]:
+    from opencode_config import get_opencode_api_key
+
+    return {
+        "Authorization": f"Bearer {get_opencode_api_key()}",
+        "User-Agent": "gen2-agent/opencode-registry",
+    }
+
+
 def _fetch_live_model_ids() -> list[str]:
     try:
         import requests
     except ImportError as exc:
         raise RuntimeError("requests package is required for OpenCode model listing") from exc
 
-    response = requests.get(live_models_url(), timeout=30)
+    response = requests.get(live_models_url(), headers=_opencode_request_headers(), timeout=30)
     response.raise_for_status()
     payload = response.json()
     data = payload.get("data") if isinstance(payload, dict) else payload

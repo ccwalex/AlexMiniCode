@@ -224,13 +224,13 @@ def list_opencode_models() -> dict:
         }
 
     models = []
-    catalog = []
+    catalog_out = []
     for entry in catalog:
         if not isinstance(entry, dict) or not entry.get("id"):
             continue
         serialized = _serialize_opencode_model(entry)
         models.append(serialized)
-        catalog.append(
+        catalog_out.append(
             {
                 **entry,
                 "label": serialized["label"],
@@ -238,13 +238,13 @@ def list_opencode_models() -> dict:
         )
 
     models.sort(key=lambda x: x["label"].lower())
-    catalog.sort(key=lambda x: str(x.get("label") or x.get("id")).lower())
+    catalog_out.sort(key=lambda x: str(x.get("label") or x.get("id")).lower())
 
     return {
         "success": True,
         "source": "opencode",
         "models": models,
-        "catalog": catalog,
+        "catalog": catalog_out,
         "error": None,
     }
 
