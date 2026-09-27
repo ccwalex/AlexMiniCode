@@ -21,7 +21,7 @@ from call_llm import call_llm_role
 from opencode_session import universal_session
 from cfg import CFG
 from parse_api_plan import extract_json_candidate, strip_code_fences
-from model_config import get_role_config
+from model_config import get_role_config, normalize_llm_source
 
 MODULE_METADATA = {
     "name": "background_context_plugin",
@@ -51,11 +51,20 @@ MODULE_METADATA = {
                 "model": "str optional model selector",
                 "effort": "str optional effort selector",
                 "max_tokens": "int optional token budget",
+                "llm_source": "str optional opencode or cursor; inherits job source when set",
+                "cursor_params": "list optional Cursor model parameters",
             },
             "outputs": "dict with success, rewritten_task, raw, and error",
         },
     ],
 }
+
+
+def _resolve_rewrite_model(job_model, role_cfg):
+    job = str(job_model or "").strip()
+    if job:
+        return job
+    return str((role_cfg or {}).get("model") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +222,8 @@ def rewrite_task(
     model=None,
     effort=None,
     max_tokens=None,
+    llm_source=None,
+    cursor_params=None,
 ):
     """
     Call the context-rewriter model once before the main planner loop.
@@ -234,17 +245,21 @@ def rewrite_task(
     if current_plan is None:
         current_plan = _safe_read("agent_memory/planning/current_plan.md")
 
-    if max_tokens is None:
-        max_tokens = get_role_config("context_rewriter")["max_tokens"]
+    role_cfg = get_role_config("context_rewriter")
+    max_tokens = max_tokens if max_tokens is not None else role_cfg["max_tokens"]
+    model = _resolve_rewrite_model(model, role_cfg)
+    effort = _normalize_effort(effort if effort is not None else role_cfg["effort"])
+    llm_source = normalize_llm_source(llm_source)
+    if llm_source is None:
+        llm_source = normalize_llm_source(role_cfg.get("source")) or "opencode"
+    if cursor_params is None:
+        cursor_params = role_cfg.get("cursor_params")
 
     system_prompt, user_prompt = build_task_rewrite_prompts(
         task=task,
         project=project,
         current_plan=current_plan,
     )
-
-    role_cfg = get_role_config("context_rewriter")
-    effort = _normalize_effort(effort if effort is not None else role_cfg["effort"])
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -258,6 +273,8 @@ def rewrite_task(
             max_tokens=max_tokens,
             thinking=effort,
             model=model,
+            source=llm_source,
+            cursor_params=cursor_params,
             timeout=CFG.get_timeout("background_context_call", 240),
             session_id=universal_session("context_rewriter"),
         )
@@ -284,8 +301,9 @@ if __name__ == "__main__":
         project="demo project",
         current_plan="demo plan",
     )
-    assert "PLACEHOLDER" in system_prompt
     assert "demo task" in user_prompt
+    assert _resolve_rewrite_model("job-model", {"model": "role-model"}) == "job-model"
+    assert _resolve_rewrite_model(None, {"model": "role-model"}) == "role-model"
 
     ok = parse_task_rewrite_response('{"rewritten_task":"rewritten demo task"}')
     assert ok["success"] is True

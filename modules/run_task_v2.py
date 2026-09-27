@@ -349,6 +349,9 @@ def _run_task_v2(
         try:
             rewrite_result = rewrite_task(
                 task=task_for_rewrite,
+                model=model,
+                llm_source=llm_source,
+                cursor_params=cursor_params,
             )
 
             if isinstance(rewrite_result, dict) and rewrite_result.get("success"):
