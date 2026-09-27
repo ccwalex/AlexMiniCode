@@ -55,6 +55,17 @@ MAX_RETURN_CHARS = 4000
 MAX_FILES = 20
 SUBAGENT_LOG_SUMMARY_CHARS = 2000
 SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 1200
+SUBAGENT_DEFAULT_IMPLEMENT_TIMEOUT_SECONDS = 3000
+
+
+def default_subagent_timeout_seconds(role="review"):
+    try:
+        role = normalize_subagent_role(role)
+    except ValueError:
+        role = "review"
+    if role == "implement":
+        return SUBAGENT_DEFAULT_IMPLEMENT_TIMEOUT_SECONDS
+    return SUBAGENT_DEFAULT_TIMEOUT_SECONDS
 
 
 def log_subagent_result(result, *, role=None, task=None):
@@ -347,7 +358,7 @@ def _run_process(task, role, files, timeout_seconds):
         )
 
 
-def run_subagent(task, role="review", files=None, timeout_seconds=SUBAGENT_DEFAULT_TIMEOUT_SECONDS, **kwargs):
+def run_subagent(task, role="review", files=None, timeout_seconds=None, **kwargs):
     task = str(task or "").strip()
     try:
         role = normalize_subagent_role(role)
@@ -375,10 +386,12 @@ def run_subagent(task, role="review", files=None, timeout_seconds=SUBAGENT_DEFAU
             summary="",
             error="nested subagent delegation is disabled",
         )
+    if timeout_seconds is None:
+        timeout_seconds = default_subagent_timeout_seconds(role)
     try:
         timeout_seconds = max(1, min(int(timeout_seconds), 3600))
     except Exception:
-        timeout_seconds = SUBAGENT_DEFAULT_TIMEOUT_SECONDS
+        timeout_seconds = default_subagent_timeout_seconds(role)
     files = files if isinstance(files, list) else []
 
     original_task = task

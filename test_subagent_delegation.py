@@ -41,6 +41,24 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(payload["role"], "review")
         self.assertEqual(payload["files"], ["agent/modules/parse_api_plan.py"])
 
+    def test_parser_defaults_implement_timeout(self):
+        parsed = parse_api_plan(
+            [
+                {
+                    "url": "/subagent",
+                    "payload": {
+                        "task": "Apply the patch checklist",
+                        "role": "implement",
+                        "files": ["agent/modules/foo.py"],
+                    },
+                }
+            ]
+        )
+        self.assertTrue(parsed["success"], parsed)
+        payload = parsed["calls"][0]["payload"]
+        self.assertEqual(payload["timeout_seconds"], 3000)
+        self.assertEqual(payload["role"], "implement")
+
     def test_parser_aliases_explore_to_review(self):
         parsed = parse_api_plan(
             [{"url": "/subagent", "payload": {"task": "inspect", "role": "explore"}}]

@@ -16,7 +16,11 @@ from render_file_context import drop_read_cache
 from job_progress import emit_substep
 from conflict import execute_conflict
 from subagent_capabilities import is_allowed, normalize_subagent_role
-from subagent_runner import log_subagent_result, run_subagent
+from subagent_runner import (
+    default_subagent_timeout_seconds,
+    log_subagent_result,
+    run_subagent,
+)
 from propagate_module_io_change import queue_dependency_cascade, snapshot_pre_content
 
 MODULE_METADATA = {
@@ -662,7 +666,10 @@ def execute_api_call(
                 task=payload.get("task"),
                 role=role,
                 files=payload.get("files", []),
-                timeout_seconds=payload.get("timeout_seconds", 1200),
+                timeout_seconds=payload.get(
+                    "timeout_seconds",
+                    default_subagent_timeout_seconds(role),
+                ),
             )
             log_subagent_result(
                 subagent_result,

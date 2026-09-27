@@ -322,6 +322,7 @@ Payload:
   "files": ["paths/the/subagent/needs.py"],
   "timeout_seconds": 1200
 }
+(timeout_seconds optional: review default 1200s, implement default 3000s)
 
 Tailoring rules:
 - Write task as if for a colleague with no prior chat history.
