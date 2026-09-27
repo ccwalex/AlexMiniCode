@@ -88,10 +88,25 @@ _role_overrides: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "llm_role_overrides",
     default=None,
 )
+_job_llm_source: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "job_llm_source",
+    default=None,
+)
 
 
 def _config_path() -> Path:
     return Path(safe_path(CONFIG_REL_PATH))
+
+
+def normalize_llm_source(source) -> str | None:
+    value = str(source or "").strip().lower()
+    if not value:
+        return None
+    if value == "relay":
+        return "opencode"
+    if value in LLM_SOURCES:
+        return value
+    return None
 
 
 def normalize_effort(effort) -> str:
@@ -294,6 +309,19 @@ def role_override_scope(overrides: dict | None):
         _role_overrides.reset(token)
 
 
+@contextmanager
+def job_llm_source_scope(source):
+    token = _job_llm_source.set(normalize_llm_source(source))
+    try:
+        yield
+    finally:
+        _job_llm_source.reset(token)
+
+
+def get_job_llm_source() -> str | None:
+    return _job_llm_source.get()
+
+
 def get_role_config(role: str) -> dict:
     role = str(role or "").strip()
     if role not in LLM_ROLES:
@@ -360,6 +388,12 @@ if __name__ == "__main__":
         assert overridden["source"] == "cursor"
     assert get_role_config("subagent_review")["model"] != "override-model"
     assert get_parse_fallback("execution")["model"]
+    assert normalize_llm_source("opencode") == "opencode"
+    assert normalize_llm_source("relay") == "opencode"
+    assert normalize_llm_source("") is None
+    with job_llm_source_scope("opencode"):
+        assert get_job_llm_source() == "opencode"
+    assert get_job_llm_source() is None
     saved = save_model_config(cfg)
     assert saved["roles"]["debug"]["model"] == "deepseek-v4-flash"
     empty_model = save_model_config(

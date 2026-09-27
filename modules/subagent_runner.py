@@ -238,12 +238,14 @@ def _run_process(task, role, files, timeout_seconds):
         result_path = temp_path / "result.json"
         stdout_path = temp_path / "stdout.log"
         stderr_path = temp_path / "stderr.log"
+        from model_config import get_job_llm_source
+
         config = {
             "task": "\n".join(task_parts),
             "role": role,
             "model": role_cfg.get("model"),
             "effort": role_cfg.get("effort"),
-            "llm_source": role_cfg.get("source"),
+            "llm_source": get_job_llm_source() or role_cfg.get("source"),
             "cursor_params": role_cfg.get("cursor_params"),
             "max_tokens": role_cfg.get("max_tokens"),
             "max_iterations": 10,

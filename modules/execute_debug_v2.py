@@ -46,7 +46,7 @@ MODULE_METADATA = {
     ]
 }
 
-from model_config import get_role_config
+from model_config import get_role_config, normalize_llm_source
 
 
 def normalize_effort(effort):
@@ -90,14 +90,17 @@ def _print_debug_section(title, body, max_chars=2500):
     print(text or "(empty)")
 
 
-def _print_debug_start(task, failed_call, failed_result, *, model, effort, max_debug_iterations):
+def _print_debug_start(task, failed_call, failed_result, *, model, effort, llm_source, max_debug_iterations):
     print("\n" + "=" * 72)
     print("[Debug Loop] START — runtime execution failure; entering debug repair")
     print(
         "[Debug Loop] This repairs failed API steps. "
         "Structured Retry (earlier in logs) only retries malformed planner JSON."
     )
-    print(f"[Debug Loop] model={model} effort={effort} max_iterations={max_debug_iterations}")
+    print(
+        f"[Debug Loop] llm_source={llm_source} model={model} "
+        f"effort={effort} max_iterations={max_debug_iterations}"
+    )
     task_preview = str(task or "").strip().replace("\n", " ")
     if len(task_preview) > 240:
         task_preview = task_preview[:237] + "..."
@@ -227,8 +230,9 @@ def execute_debug_v2(
     max_tokens = max_tokens if max_tokens is not None else debug_cfg["max_tokens"]
     model = _resolve_debug_model(model, debug_cfg)
     effort = effort if effort is not None else debug_cfg["effort"]
+    llm_source = normalize_llm_source(llm_source)
     if llm_source is None:
-        llm_source = debug_cfg.get("source")
+        llm_source = normalize_llm_source(debug_cfg.get("source")) or "opencode"
     if cursor_params is None:
         cursor_params = debug_cfg.get("cursor_params")
     if max_debug_iterations is None:
@@ -272,6 +276,7 @@ def execute_debug_v2(
         original_failed_result,
         model=model,
         effort=final_effort,
+        llm_source=llm_source,
         max_debug_iterations=max_debug_iterations,
     )
 

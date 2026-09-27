@@ -108,6 +108,19 @@ def _fallback_overrides(kind: str) -> dict:
     return {key: value for key, value in overrides.items() if value is not None}
 
 
+def _respect_primary_source(extra: dict, call_kwargs: dict) -> dict:
+    """Keep the caller's transport; parse fallback may only change model/effort/tokens."""
+    primary = str(call_kwargs.get("source") or "").strip().lower()
+    if not primary:
+        return extra
+
+    pinned = dict(extra)
+    pinned["source"] = primary
+    if primary != "cursor":
+        pinned.pop("cursor_params", None)
+    return pinned
+
+
 def call_llm_role_with_parse_retry(
     role: str,
     messages: list[dict[str, str]],
@@ -146,7 +159,10 @@ def call_llm_role_with_parse_retry(
         print(f"[Structured Retry] {role}: repeat succeeded")
         return raw
 
-    extra = _fallback_overrides(parse_fallback_kind)
+    extra = _respect_primary_source(
+        _fallback_overrides(parse_fallback_kind),
+        call_kwargs,
+    )
     if not extra.get("model"):
         print(f"[Structured Retry] {role}: no parse fallback model configured; giving up")
         return raw
@@ -205,5 +221,33 @@ if __name__ == "__main__":
     assert fallback_calls["models"][0] == "primary-model"
     assert fallback_calls["models"][1] == "primary-model"
     assert fallback_calls["models"][2] not in (None, "")
+
+    source_calls = {"sources": [], "cursor_params": []}
+
+    def tracking_source_llm(**kwargs):
+        source_calls["sources"].append(kwargs.get("source"))
+        source_calls["cursor_params"].append(kwargs.get("cursor_params"))
+        return "still invalid"
+
+    original_fallback = _fallback_overrides
+    _fallback_overrides = lambda kind: {
+        "source": "cursor",
+        "model": "composer-2.5",
+        "cursor_params": [{"id": "fast", "value": "true"}],
+    }
+    try:
+        call_llm_role_with_parse_retry(
+            role="debug",
+            messages=[{"role": "user", "content": "x"}],
+            is_valid=always_invalid,
+            parse_fallback_kind="execution",
+            llm_call=lambda **kwargs: tracking_source_llm(**kwargs),
+            source="opencode",
+            model="primary-model",
+        )
+    finally:
+        _fallback_overrides = original_fallback
+    assert source_calls["sources"] == ["opencode", "opencode", "opencode"]
+    assert source_calls["cursor_params"] == [None, None, None]
 
     print("STRUCTURED_LLM_RETRY SELF TEST PASSED")
