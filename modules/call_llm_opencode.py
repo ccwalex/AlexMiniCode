@@ -506,6 +506,12 @@ def _candidate_transports(primary: str) -> list[str]:
     return [primary] + [t for t in _TRANSPORT_FALLBACK_ORDER if t != primary]
 
 
+def _variant_loop_error(exc, last_error):
+    if last_error is None:
+        return exc
+    return last_error
+
+
 def _dispatch_transport(
     transport: str,
     model_id: str,
@@ -519,7 +525,8 @@ def _dispatch_transport(
 ):
     endpoint_path = resolve_endpoint_path(transport)
     if transport == "messages":
-        last_bad_request = None
+        last_variant_error = None
+        default_label = "default"
         for label, payload in _messages_payload_variants(
             model_id,
             normalized_messages,
@@ -529,20 +536,28 @@ def _dispatch_transport(
         ):
             try:
                 raw = _post_opencode(endpoint_path, payload, headers, timeout)
-                if label != "default":
+                text = _extract_messages_text(raw)
+                if not str(text or "").strip():
+                    last_variant_error = ValueError(
+                        f"empty messages response for payload '{label}'"
+                    )
+                    continue
+                if label != default_label:
                     print(
                         f"[OpenCode] {model_id}: messages payload '{label}' succeeded "
                         f"after earlier variant was rejected"
                     )
-                text = _extract_messages_text(raw)
                 break
-            except OpenCodeBadRequest as exc:
-                last_bad_request = exc
+            except (OpenCodeBadRequest, ValueError) as exc:
+                last_variant_error = _variant_loop_error(exc, last_variant_error)
                 continue
         else:
-            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode messages request failed")
+            raise RuntimeError(
+                str(last_variant_error) if last_variant_error else "OpenCode messages request failed"
+            )
     elif transport == "responses":
-        last_bad_request = None
+        last_variant_error = None
+        default_label = "input-system"
         for label, payload in _responses_payload_variants(
             model_id,
             normalized_messages,
@@ -553,20 +568,29 @@ def _dispatch_transport(
         ):
             try:
                 raw = _post_opencode(endpoint_path, payload, headers, timeout)
-                if label != "input-system":
+                text = _extract_responses_text(raw)
+                if not str(text or "").strip():
+                    last_variant_error = ValueError(
+                        f"empty responses body for payload '{label}' "
+                        f"(status={raw.get('status') if isinstance(raw, dict) else 'unknown'})"
+                    )
+                    continue
+                if label != default_label:
                     print(
                         f"[OpenCode] {model_id}: responses payload '{label}' succeeded "
                         f"after earlier variant was rejected"
                     )
-                text = _extract_responses_text(raw)
                 break
-            except OpenCodeBadRequest as exc:
-                last_bad_request = exc
+            except (OpenCodeBadRequest, ValueError) as exc:
+                last_variant_error = _variant_loop_error(exc, last_variant_error)
                 continue
         else:
-            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode responses request failed")
+            raise RuntimeError(
+                str(last_variant_error) if last_variant_error else "OpenCode responses request failed"
+            )
     else:
-        last_bad_request = None
+        last_variant_error = None
+        default_label = "default"
         for label, payload in _chat_payload_variants(
             model_id,
             normalized_messages,
@@ -576,18 +600,25 @@ def _dispatch_transport(
         ):
             try:
                 raw = _post_opencode(endpoint_path, payload, headers, timeout)
-                if label != "default":
+                text = _extract_chat_text(raw)
+                if not str(text or "").strip():
+                    last_variant_error = ValueError(
+                        f"empty chat response for payload '{label}'"
+                    )
+                    continue
+                if label != default_label:
                     print(
                         f"[OpenCode] {model_id}: chat payload '{label}' succeeded "
                         f"after earlier variant was rejected"
                     )
-                text = _extract_chat_text(raw)
                 break
-            except OpenCodeBadRequest as exc:
-                last_bad_request = exc
+            except (OpenCodeBadRequest, ValueError) as exc:
+                last_variant_error = _variant_loop_error(exc, last_variant_error)
                 continue
         else:
-            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode chat request failed")
+            raise RuntimeError(
+                str(last_variant_error) if last_variant_error else "OpenCode chat request failed"
+            )
     return text, raw, transport, endpoint_path
 
 
@@ -725,5 +756,40 @@ if __name__ == "__main__":
     assert len(_messages_payload_variants("minimax-m3", msgs, 100, "medium", {})) >= 2
     assert _is_likely_transport_mismatch('{"error":"model not supported on /chat/completions"}')
     assert not _is_likely_transport_mismatch('{"error":"invalid api key"}')
+
+    calls = {"n": 0}
+
+    def mock_post(path, payload, headers, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"status": "incomplete", "output": [{"type": "reasoning"}]}
+        return {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }
+            ],
+        }
+
+    original_post = _post_opencode
+    _post_opencode = mock_post
+    try:
+        text, raw, transport, endpoint_path = _dispatch_transport(
+            "responses",
+            "gpt-6-luna",
+            msgs,
+            64,
+            "high",
+            {"reasoning_options": [{"type": "effort", "values": ["high"]}]},
+            "job-1:planner",
+            build_opencode_headers("job-1:planner"),
+            30,
+        )
+        assert text == "ok"
+        assert calls["n"] >= 2
+    finally:
+        _post_opencode = original_post
 
     print("CALL_LLM_OPENCODE SELF TEST PASSED")
