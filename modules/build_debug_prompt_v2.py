@@ -153,7 +153,6 @@ def build_debug_prompt_v2(
     else:
         attached_module_registry_block = "<module_registry />"
     memory = _safe_read("agent_memory/reasoning/llm_memory.json")
-    failure_log = _safe_read("agent_memory/reasoning/failures.md")
     failure_class = _classify_failed_call(failed_call, failed_result)
     feedback_context = ""
 
@@ -480,10 +479,6 @@ Read-only notes preserved by the main planner before this debug repair:
 <memory>
 {memory}
 </memory>
-
-<failure_log>
-{failure_log}
-</failure_log>
 
 <failure_class>
 {failure_class}

@@ -203,20 +203,18 @@ def get_scratchpad_endpoint_doc(loop: str = "main") -> str:
 
     if is_debug:
         description = """
-The debug scratchpad is separate from the main scratchpad.
+The scratchpad is task-local storage for a live working plan across turns.
 
-Use it during debug repair to preserve:
+Use it to preserve:
 - failure hypotheses
 - attempted fixes
 - validation notes
-- commands/results worth remembering across debug iterations
-
-The debug scratchpad exists only for the current execute_debug_v2 session.
+- commands/results worth remembering across iterations
+Always try to write to the scratchpad every turn and in a way that is self-contained and self-explanatory.
 """.strip()
     else:
         description = """
-The scratchpad is task-local RAM storage for a live working plan across turns
-within the same main run_task_v2 loop.
+The scratchpad is task-local storage for a live working plan across turns.
 
 Use it to preserve:
 - intermediate conclusions and decisions
@@ -228,7 +226,7 @@ Use it to preserve:
 Do NOT copy <current_task> or restate the user request into the scratchpad.
 Prefer short structured bullets (e.g. Done / Next / Constraints) when helpful.
 
-The scratchpad is NOT persisted to disk and is cleared when the task ends.
+Always try to write to the scratchpad every turn and in a way that is self-contained and self-explanatory.
 """.strip()
 
     index = 8 if is_debug else 9
@@ -247,9 +245,7 @@ Rules:
 - Use read to inspect current scratchpad content.
 - Prefer append to add new findings; use set only when intentionally rewriting the whole working plan.
 - Use clear to empty the scratchpad.
-- Scratchpad content is injected back into later planner turns for this loop only.
-- Scratchpad is omitted from the prompt when empty or on the first loop turn.
-- This loop uses the {"debug" if is_debug else "main"} scratchpad instance.
+- Scratchpad content is injected back into later planner turns.
 """.strip()
 
 

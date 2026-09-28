@@ -185,6 +185,35 @@ class DependencyCascadeTests(unittest.TestCase):
         self.assertEqual(delta["action"], "update_callers")
         self.assertIn("y", delta["hints"]["added_required_params"])
 
+    def test_classify_io_delta_flags_return_output_reorder(self):
+        before = extract_public_contract(
+            "mod.py",
+            "def foo() -> tuple[int, str]:\n    return 1, 'a'\n",
+            "py",
+        )
+        after = extract_public_contract(
+            "mod.py",
+            "def foo() -> tuple[str, int]:\n    return 'a', 1\n",
+            "py",
+        )
+        delta = classify_io_delta(before, after)
+        self.assertEqual(delta["action"], "update_callers")
+        self.assertIn("return output order changed", delta["reason"])
+
+        body_before = extract_public_contract(
+            "mod.py",
+            "def foo():\n    return 1, 'a'\n",
+            "py",
+        )
+        body_after = extract_public_contract(
+            "mod.py",
+            "def foo():\n    return 'a', 1\n",
+            "py",
+        )
+        body_delta = classify_io_delta(body_before, body_after)
+        self.assertEqual(body_delta["action"], "update_callers")
+        self.assertIn("return output order changed", body_delta["reason"])
+
     def test_changed_outputs_grep_and_limited_edit(self):
         before = "def foo(x: int) -> dict:\n    return {}\n"
         after = "def foo(x: int) -> list:\n    return []\n"

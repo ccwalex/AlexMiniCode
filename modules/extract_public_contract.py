@@ -54,12 +54,59 @@ def _kwonly_param_default(kw_defaults, kw_index):
     return _ann(default_node), False
 
 
+def _split_tuple_type_parts(text):
+    parts = []
+    current = []
+    depth = 0
+    for char in text:
+        if char in "[(<":
+            depth += 1
+        elif char in "])>":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            piece = "".join(current).strip()
+            if piece:
+                parts.append(piece)
+            current = []
+            continue
+        current.append(char)
+    piece = "".join(current).strip()
+    if piece:
+        parts.append(piece)
+    return parts
+
+
+def _tuple_element_types_from_annotation(returns_ann):
+    if not returns_ann:
+        return None
+    text = str(returns_ann).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered.startswith("tuple[") or lowered.startswith("typing.tuple["):
+        inner = text[text.index("[") + 1 : text.rindex("]")]
+        parts = _split_tuple_type_parts(inner)
+        return parts if len(parts) > 1 else None
+    if lowered.startswith("tuple("):
+        inner = text[text.index("(") + 1 : text.rindex(")")]
+        parts = _split_tuple_type_parts(inner)
+        return parts if len(parts) > 1 else None
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1]
+        parts = _split_tuple_type_parts(inner)
+        return parts if len(parts) > 1 else None
+    return None
+
+
 def _return_arity_from_annotation(returns_ann):
     if not returns_ann:
         return None
     text = str(returns_ann).strip()
     if not text or text in {"None", "typing.None", "NoneType"}:
         return 0
+    tuple_elements = _tuple_element_types_from_annotation(returns_ann)
+    if tuple_elements is not None:
+        return len(tuple_elements)
     lowered = text.lower()
     if lowered.startswith("tuple[") or lowered.startswith("typing.tuple["):
         inner = text[text.index("[") + 1 : text.rindex("]")]
@@ -70,6 +117,48 @@ def _return_arity_from_annotation(returns_ann):
         parts = [part.strip() for part in inner.split(",") if part.strip()]
         return len(parts) if parts else None
     return 1
+
+
+def _expr_shape(expr):
+    if isinstance(expr, ast.Constant):
+        value = expr.value
+        if value is None:
+            return "None"
+        return type(value).__name__
+    if isinstance(expr, ast.Name):
+        return f"ref:{expr.id}"
+    if isinstance(expr, ast.Attribute):
+        try:
+            return ast.unparse(expr)
+        except Exception:
+            return "attr"
+    if isinstance(expr, ast.Call):
+        try:
+            return ast.unparse(expr)
+        except Exception:
+            return "call"
+    try:
+        return ast.unparse(expr)
+    except Exception:
+        return ast.dump(expr, annotate_fields=False)
+
+
+def _return_tuple_elements_from_body(node):
+    shapes = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Return) or child.value is None:
+            continue
+        if isinstance(child.value, ast.Tuple):
+            shapes.append(tuple(_expr_shape(elt) for elt in child.value.elts))
+        else:
+            shapes.append(None)
+    tuple_shapes = [shape for shape in shapes if shape is not None]
+    if not tuple_shapes or len(tuple_shapes) != len(shapes):
+        return None
+    if len(set(tuple_shapes)) != 1:
+        return None
+    shape = tuple_shapes[0]
+    return list(shape) if len(shape) > 1 else None
 
 
 def _return_arity_from_body(node):
@@ -122,14 +211,18 @@ def _py_func_sig(node, skip_self=False):
             }
         )
     returns = _ann(node.returns)
+    return_tuple_elements = _tuple_element_types_from_annotation(returns)
     return_arity = _return_arity_from_annotation(returns)
     if return_arity is None:
         return_arity = _return_arity_from_body(node)
+    if return_tuple_elements is None and (return_arity or 0) > 1:
+        return_tuple_elements = _return_tuple_elements_from_body(node)
     return {
         "kind": "function",
         "params": params,
         "returns": returns,
         "return_arity": return_arity,
+        "return_tuple_elements": return_tuple_elements,
         "async": isinstance(node, ast.AsyncFunctionDef),
     }
 
@@ -236,29 +329,34 @@ def _ts_params(raw):
 
 def _extract_typescript(content):
     exports = {}
-    for match in _TS_FUNC.finditer(content):
-        exports[match.group(2)] = {
+    def _ts_func_export(params_raw, returns_raw, async_flag=False, default=False, name=None):
+        returns = (returns_raw or "").strip() or None
+        return_tuple_elements = _tuple_element_types_from_annotation(returns)
+        export = {
             "kind": "function",
-            "params": _ts_params(match.group(3)),
-            "returns": (match.group(4) or "").strip() or None,
-            "async": bool(match.group(1)),
+            "params": _ts_params(params_raw),
+            "returns": returns,
+            "return_arity": _return_arity_from_annotation(returns),
+            "return_tuple_elements": return_tuple_elements,
+            "async": bool(async_flag),
         }
+        if default:
+            export["default"] = True
+        return export
+
+    for match in _TS_FUNC.finditer(content):
+        exports[match.group(2)] = _ts_func_export(match.group(3), match.group(4), match.group(1))
     for match in _TS_DEFAULT_FUNC.finditer(content):
         name = match.group(2) or "default"
-        exports[name] = {
-            "kind": "function",
-            "params": _ts_params(match.group(3)),
-            "returns": (match.group(4) or "").strip() or None,
-            "async": bool(match.group(1)),
-            "default": True,
-        }
+        exports[name] = _ts_func_export(
+            match.group(3),
+            match.group(4),
+            match.group(1),
+            default=True,
+            name=name,
+        )
     for match in _TS_CONST_ARROW.finditer(content):
-        exports[match.group(1)] = {
-            "kind": "function",
-            "params": _ts_params(match.group(3)),
-            "returns": (match.group(4) or "").strip() or None,
-            "async": bool(match.group(2)),
-        }
+        exports[match.group(1)] = _ts_func_export(match.group(3), match.group(4), match.group(2))
     types = _TS_TYPE.findall(content)
     if types:
         exports["__types__"] = {"kind": "types", "names": sorted(set(types))}
@@ -428,11 +526,20 @@ def classify_io_delta(before, after):
     return_type_after = after_sig.get("returns")
     return_arity_before = before_sig.get("return_arity")
     return_arity_after = after_sig.get("return_arity")
+    return_tuple_before = before_sig.get("return_tuple_elements")
+    return_tuple_after = after_sig.get("return_tuple_elements")
     return_type_changed = return_type_before != return_type_after
     return_arity_changed = (
         return_arity_before is not None
         and return_arity_after is not None
         and return_arity_before != return_arity_after
+    )
+    return_output_reordered = (
+        isinstance(return_tuple_before, list)
+        and isinstance(return_tuple_after, list)
+        and len(return_tuple_before) > 1
+        and len(return_tuple_after) > 1
+        and return_tuple_before != return_tuple_after
     )
 
     hints = {
@@ -445,6 +552,8 @@ def classify_io_delta(before, after):
         "return_type_after": return_type_after,
         "return_arity_before": return_arity_before,
         "return_arity_after": return_arity_after,
+        "return_tuple_before": return_tuple_before,
+        "return_tuple_after": return_tuple_after,
     }
 
     breaking = bool(
@@ -453,6 +562,7 @@ def classify_io_delta(before, after):
         or became_required
         or return_type_changed
         or return_arity_changed
+        or return_output_reordered
     )
     if breaking:
         reason_parts = []
@@ -462,7 +572,9 @@ def classify_io_delta(before, after):
             reason_parts.append("params became required")
         if removed_params:
             reason_parts.append("removed params")
-        if return_type_changed:
+        if return_output_reordered:
+            reason_parts.append("return output order changed")
+        elif return_type_changed:
             reason_parts.append("return type changed")
         if return_arity_changed:
             reason_parts.append("return arity changed")
@@ -604,5 +716,33 @@ if __name__ == "__main__":
     )
     delta_tuple = classify_io_delta(tuple_before, tuple_after)
     assert delta_tuple["action"] == "update_callers", delta_tuple
+
+    tuple_reorder_before = extract_public_contract(
+        "mod.py",
+        "def foo() -> tuple[int, str]:\n    return 1, 'a'\n",
+        "py",
+    )
+    tuple_reorder_after = extract_public_contract(
+        "mod.py",
+        "def foo() -> tuple[str, int]:\n    return 'a', 1\n",
+        "py",
+    )
+    delta_tuple_reorder = classify_io_delta(tuple_reorder_before, tuple_reorder_after)
+    assert delta_tuple_reorder["action"] == "update_callers", delta_tuple_reorder
+    assert "return output order changed" in delta_tuple_reorder["reason"], delta_tuple_reorder
+
+    body_reorder_before = extract_public_contract(
+        "mod.py",
+        "def foo():\n    return 1, 'a'\n",
+        "py",
+    )
+    body_reorder_after = extract_public_contract(
+        "mod.py",
+        "def foo():\n    return 'a', 1\n",
+        "py",
+    )
+    delta_body_reorder = classify_io_delta(body_reorder_before, body_reorder_after)
+    assert delta_body_reorder["action"] == "update_callers", delta_body_reorder
+    assert "return output order changed" in delta_body_reorder["reason"], delta_body_reorder
 
     print("EXTRACT_PUBLIC_CONTRACT SELF TEST PASSED")
