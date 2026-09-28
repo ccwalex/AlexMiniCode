@@ -1061,6 +1061,7 @@ function progressRowLabel(row){
   if(phase==='verifying') return 'verifying';
   if(phase==='repairing') return 'repairing';
   if(phase==='shell') return 'shell';
+  if(row.event==='llm_routing') return String(row.label||`llm ${row.role||''}`).trim()||'llm routing';
   return String(row.action||row.url||'step');
 }
 function renderPlanProgress(progress){
@@ -1082,7 +1083,7 @@ function renderPlanProgress(progress){
   }
   const rows=filtered.length?filtered:snapshot;
   for(const row of rows){
-    const isSub=row.event==='substep'||!!row.phase;
+    const isSub=row.event==='substep'||row.event==='llm_routing'||!!row.phase;
     const idx=row.index!=null?`[${row.index}]`:'';
     const badge=progressBadgeClass(row);
     const label=progressRowLabel(row);

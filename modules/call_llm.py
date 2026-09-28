@@ -76,6 +76,28 @@ def _role_timeout(role: str, timeout=None):
     return CFG.get_timeout(timeout_key, 240)
 
 
+def _emit_llm_routing(role: str, result: dict):
+    if not isinstance(result, dict):
+        return
+    try:
+        from job_progress import emit_llm_routing
+
+        emit_llm_routing(
+            role=role,
+            llm_source=result.get("llm_source") or result.get("source"),
+            llm_model=result.get("llm_model") or result.get("model"),
+            transport=result.get("transport"),
+            endpoint_path=result.get("endpoint_path"),
+            primary_transport=result.get("primary_transport"),
+            transport_source=result.get("transport_source"),
+            transport_fallback_used=result.get("transport_fallback_used"),
+            fallback_used=result.get("fallback_used"),
+            fallback_from=result.get("fallback_from"),
+        )
+    except Exception:
+        pass
+
+
 def _call_llm_attempt(
     *,
     source: str,
@@ -197,6 +219,8 @@ def call_llm_role(
                 result["fallback_from"] = format_fallback_attempt(chain[0])
             else:
                 result["fallback_used"] = False
+
+            _emit_llm_routing(role, result)
 
         return result
 
