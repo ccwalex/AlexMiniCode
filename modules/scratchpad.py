@@ -222,7 +222,7 @@ Use it to preserve:
 - file/path findings
 - constraints discovered during the task
 - open questions still unresolved
-
+Executions can be staged by writing in scratchpad.
 Do NOT copy <current_task> or restate the user request into the scratchpad.
 Prefer short structured bullets (e.g. Done / Next / Constraints) when helpful.
 

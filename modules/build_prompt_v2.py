@@ -497,6 +497,7 @@ Rules:
 - Default to parent /write or /edit for nearly all code changes, including after review summaries return.
 - Spawn implement /subagent sparingly — only when every edit is predetermined and mechanical (exact paths, per-file edits, constraints, verify) with zero reasoning required. Never for design, diagnosis, trade-offs, or ambiguous work.
 - If unsure whether reasoning is still needed, prefer edit by parent.
+- subagents must be the last calls before request_feedback.
 </delegation_rules>
 
 <task_completion_rules>
