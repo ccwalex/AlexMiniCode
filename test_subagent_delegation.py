@@ -488,6 +488,46 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(settings["llm_source"], "opencode")
         self.assertNotEqual(settings["llm_source"], "cursor")
 
+    def test_subagent_worker_role_overrides_pin_planner_roles(self):
+        llm_settings = {
+            "llm_source": "opencode",
+            "model": "glm-5.3-flash",
+            "effort": "m",
+            "max_tokens": 8192,
+        }
+        overrides = runner._build_subagent_worker_role_overrides(
+            llm_settings,
+            {
+                "subagent_review": {
+                    "source": "opencode",
+                    "model": "glm-5.3-flash",
+                    "effort": "m",
+                    "max_tokens": 8192,
+                }
+            },
+        )
+        self.assertEqual(overrides["main_planner"]["model"], "glm-5.3-flash")
+        self.assertEqual(overrides["context_rewriter"]["source"], "opencode")
+        self.assertEqual(overrides["debug"]["model"], "glm-5.3-flash")
+
+    def test_subagent_worker_config_skips_rewrite_and_carries_job_id(self):
+        llm_settings = {
+            "llm_source": "opencode",
+            "model": "qwen3.8-flash",
+            "effort": "m",
+            "max_tokens": 8192,
+        }
+        config = runner.build_subagent_worker_config(
+            task="delegated task",
+            role="review",
+            llm_settings=llm_settings,
+            parent_job_id="job_20260101_abcd1234",
+        )
+        self.assertTrue(config.get("skip_task_rewrite"))
+        self.assertEqual(config.get("job_id"), "job_20260101_abcd1234")
+        self.assertEqual(config["role_overrides"]["main_planner"]["model"], "qwen3.8-flash")
+        self.assertEqual(config["role_overrides"]["context_rewriter"]["source"], "opencode")
+
     def test_subagent_skips_debug_and_returns_failure_feedback(self):
         failed_call = {"url": "/write", "payload": {"path": "a.py", "content": "x"}}
         failed_result = {

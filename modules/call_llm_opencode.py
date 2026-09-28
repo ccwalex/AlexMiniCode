@@ -123,7 +123,16 @@ def _cache_control_block() -> dict:
     return {"type": "ephemeral"}
 
 
-def _build_messages_payload(model_id: str, messages, max_tokens: int, thinking: str, api_entry) -> dict:
+def _build_messages_payload(
+    model_id: str,
+    messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+    *,
+    include_reasoning: bool = True,
+    include_cache_control: bool = True,
+) -> dict:
     system_blocks = []
     convo = []
 
@@ -131,26 +140,20 @@ def _build_messages_payload(model_id: str, messages, max_tokens: int, thinking: 
         role = item["role"]
         content = item["content"]
         if role == "system":
-            system_blocks.append(
-                {
-                    "type": "text",
-                    "text": content,
-                    "cache_control": _cache_control_block(),
-                }
-            )
+            block = {"type": "text", "text": content}
+            if include_cache_control:
+                block["cache_control"] = _cache_control_block()
+            system_blocks.append(block)
         else:
             convo.append({"role": role, "content": content})
 
     if convo:
         last = convo[-1]
         if last["role"] == "user":
-            last["content"] = [
-                {
-                    "type": "text",
-                    "text": last["content"],
-                    "cache_control": _cache_control_block(),
-                }
-            ]
+            block = {"type": "text", "text": last["content"]}
+            if include_cache_control:
+                block["cache_control"] = _cache_control_block()
+            last["content"] = [block]
         convo[-1] = last
 
     payload = {
@@ -161,18 +164,89 @@ def _build_messages_payload(model_id: str, messages, max_tokens: int, thinking: 
     if system_blocks:
         payload["system"] = system_blocks
 
-    _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
+    if include_reasoning:
+        _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
     return payload
 
 
-def _build_chat_payload(model_id: str, messages, max_tokens: int, thinking: str, api_entry) -> dict:
+def _messages_payload_variants(
+    model_id: str,
+    messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+) -> list[tuple[str, dict]]:
+    variants: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    def _add(label: str, **kwargs):
+        payload = _build_messages_payload(
+            model_id,
+            messages,
+            max_tokens,
+            thinking,
+            api_entry,
+            **kwargs,
+        )
+        key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append((label, payload))
+
+    _add("default")
+    _add("no-reasoning", include_reasoning=False)
+    _add("no-cache", include_reasoning=False, include_cache_control=False)
+    return variants
+
+
+def _build_chat_payload(
+    model_id: str,
+    messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+    *,
+    include_reasoning: bool = True,
+) -> dict:
     payload = {
         "model": model_id,
         "messages": messages,
         "max_tokens": int(max_tokens),
     }
-    _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
+    if include_reasoning:
+        _apply_reasoning(payload, thinking, (api_entry or {}).get("reasoning_options"))
     return payload
+
+
+def _chat_payload_variants(
+    model_id: str,
+    messages,
+    max_tokens: int,
+    thinking: str,
+    api_entry,
+) -> list[tuple[str, dict]]:
+    variants: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    def _add(label: str, **kwargs):
+        payload = _build_chat_payload(
+            model_id,
+            messages,
+            max_tokens,
+            thinking,
+            api_entry,
+            **kwargs,
+        )
+        key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append((label, payload))
+
+    _add("default")
+    _add("no-reasoning", include_reasoning=False)
+    return variants
 
 
 def _split_responses_messages(messages, model_id: str) -> tuple[str, list[dict]]:
@@ -372,6 +446,30 @@ class OpenCodeBadRequest(RuntimeError):
         )
 
 
+def _is_likely_transport_mismatch(body: str) -> bool:
+    text = str(body or "").lower()
+    if not text:
+        return False
+    needles = (
+        "not found",
+        "not supported",
+        "unsupported",
+        "unknown endpoint",
+        "invalid endpoint",
+        "method not allowed",
+        "does not support",
+        "cannot be used with",
+        "wrong endpoint",
+        "use /responses",
+        "use /messages",
+        "use /chat",
+        "no such model",
+        "model not found",
+        "invalid model",
+    )
+    return any(needle in text for needle in needles)
+
+
 def _post_opencode(path: str, payload: dict, headers: dict, timeout: int | None):
     try:
         import requests
@@ -421,15 +519,28 @@ def _dispatch_transport(
 ):
     endpoint_path = resolve_endpoint_path(transport)
     if transport == "messages":
-        payload = _build_messages_payload(
+        last_bad_request = None
+        for label, payload in _messages_payload_variants(
             model_id,
             normalized_messages,
             max_tokens,
             thinking,
             api_entry,
-        )
-        raw = _post_opencode(endpoint_path, payload, headers, timeout)
-        text = _extract_messages_text(raw)
+        ):
+            try:
+                raw = _post_opencode(endpoint_path, payload, headers, timeout)
+                if label != "default":
+                    print(
+                        f"[OpenCode] {model_id}: messages payload '{label}' succeeded "
+                        f"after earlier variant was rejected"
+                    )
+                text = _extract_messages_text(raw)
+                break
+            except OpenCodeBadRequest as exc:
+                last_bad_request = exc
+                continue
+        else:
+            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode messages request failed")
     elif transport == "responses":
         last_bad_request = None
         for label, payload in _responses_payload_variants(
@@ -455,15 +566,28 @@ def _dispatch_transport(
         else:
             raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode responses request failed")
     else:
-        payload = _build_chat_payload(
+        last_bad_request = None
+        for label, payload in _chat_payload_variants(
             model_id,
             normalized_messages,
             max_tokens,
             thinking,
             api_entry,
-        )
-        raw = _post_opencode(endpoint_path, payload, headers, timeout)
-        text = _extract_chat_text(raw)
+        ):
+            try:
+                raw = _post_opencode(endpoint_path, payload, headers, timeout)
+                if label != "default":
+                    print(
+                        f"[OpenCode] {model_id}: chat payload '{label}' succeeded "
+                        f"after earlier variant was rejected"
+                    )
+                text = _extract_chat_text(raw)
+                break
+            except OpenCodeBadRequest as exc:
+                last_bad_request = exc
+                continue
+        else:
+            raise RuntimeError(str(last_bad_request) if last_bad_request else "OpenCode chat request failed")
     return text, raw, transport, endpoint_path
 
 
@@ -486,7 +610,7 @@ def call_llm_opencode(
     primary_transport = routing["transport"]
     headers = build_opencode_headers(session)
 
-    last_mismatch = None
+    last_transport_error = None
     text = ""
     raw = {}
     transport = primary_transport
@@ -506,10 +630,20 @@ def call_llm_opencode(
             )
             break
         except OpenCodeEndpointMismatch as exc:
-            last_mismatch = exc
+            last_transport_error = exc
             continue
+        except OpenCodeBadRequest as exc:
+            if _is_likely_transport_mismatch(exc.body):
+                last_transport_error = exc
+                continue
+            raise
+        except RuntimeError as exc:
+            if last_transport_error is None and _is_likely_transport_mismatch(str(exc)):
+                last_transport_error = exc
+                continue
+            raise
     else:
-        raise RuntimeError(str(last_mismatch) if last_mismatch else "OpenCode request failed")
+        raise RuntimeError(str(last_transport_error) if last_transport_error else "OpenCode request failed")
 
     _log_cache_usage(raw if isinstance(raw, dict) else {}, model_id, transport)
 
@@ -578,5 +712,18 @@ if __name__ == "__main__":
     assert _extract_chat_text({"choices": [{"message": {"content": "ok"}}]}) == "ok"
     assert _extract_messages_text({"content": [{"type": "text", "text": "hi"}]}) == "hi"
     assert _extract_responses_text({"output_text": "done"}) == "done"
+    assert len(_chat_payload_variants("deepseek-v4-flash", msgs, 100, "medium", {})) >= 1
+    assert len(
+        _chat_payload_variants(
+            "deepseek-v4-flash",
+            msgs,
+            100,
+            "medium",
+            {"reasoning_options": [{"type": "effort", "values": ["low", "medium"]}]},
+        )
+    ) >= 2
+    assert len(_messages_payload_variants("minimax-m3", msgs, 100, "medium", {})) >= 2
+    assert _is_likely_transport_mismatch('{"error":"model not supported on /chat/completions"}')
+    assert not _is_likely_transport_mismatch('{"error":"invalid api key"}')
 
     print("CALL_LLM_OPENCODE SELF TEST PASSED")

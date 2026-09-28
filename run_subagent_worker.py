@@ -66,6 +66,8 @@ def main():
             max_feedback_loops=config.get("max_feedback_loops"),
             max_retries=config.get("max_retries"),
             role_overrides=config.get("role_overrides"),
+            skip_task_rewrite=bool(config.get("skip_task_rewrite")),
+            job_id=config.get("job_id"),
         )
         _write_result(args.result, result)
         return 0 if isinstance(result, dict) and result.get("success") else 1

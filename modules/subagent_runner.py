@@ -51,6 +51,11 @@ ROLE_CONFIGS = {
     "review": "subagent_review",
     "implement": "subagent_implement",
 }
+SUBAGENT_WORKER_ROLES = (
+    "main_planner",
+    "context_rewriter",
+    "debug",
+)
 MAX_RETURN_CHARS = 4000
 MAX_FILES = 20
 SUBAGENT_LOG_SUMMARY_CHARS = 2000
@@ -186,6 +191,76 @@ def _artifacts_from_result(result):
     return artifacts
 
 
+def _parent_job_id() -> str | None:
+    job_dir = str(os.environ.get("GEN2_JOB_DIR") or "").strip()
+    if not job_dir:
+        return None
+    try:
+        return Path(job_dir).name
+    except Exception:
+        return None
+
+
+def build_subagent_worker_config(
+    *,
+    task: str,
+    role: str,
+    llm_settings: dict,
+    role_overrides=None,
+    parent_job_id: str | None = None,
+) -> dict:
+    """Build the worker config payload for an isolated subagent process."""
+    from model_config import _role_overrides
+
+    overrides = _build_subagent_worker_role_overrides(
+        llm_settings,
+        role_overrides or _role_overrides.get(),
+    )
+    config = {
+        "task": task,
+        "role": role,
+        "model": llm_settings.get("model"),
+        "effort": llm_settings.get("effort"),
+        "llm_source": llm_settings.get("llm_source"),
+        "cursor_params": llm_settings.get("cursor_params"),
+        "max_tokens": llm_settings.get("max_tokens"),
+        "max_iterations": 10,
+        "max_feedback_loops": 6,
+        "max_retries": 2,
+        "skip_task_rewrite": True,
+    }
+    if overrides:
+        config["role_overrides"] = overrides
+    if parent_job_id:
+        config["job_id"] = parent_job_id
+    return config
+
+
+def _build_subagent_worker_role_overrides(llm_settings: dict, role_overrides=None) -> dict:
+    """Pin the subagent's configured model/source onto planner-facing worker roles."""
+    from model_config import normalize_role_overrides
+
+    merged = dict(role_overrides or {})
+    entry = {
+        "source": llm_settings.get("llm_source"),
+        "model": llm_settings.get("model"),
+        "effort": llm_settings.get("effort"),
+        "max_tokens": llm_settings.get("max_tokens"),
+    }
+    if llm_settings.get("cursor_params"):
+        entry["cursor_params"] = llm_settings.get("cursor_params")
+
+    for role_name in SUBAGENT_WORKER_ROLES:
+        current = merged.get(role_name) if isinstance(merged.get(role_name), dict) else {}
+        combined = dict(current)
+        for key, value in entry.items():
+            if value is not None and value != "":
+                combined[key] = value
+        merged[role_name] = combined
+
+    return normalize_role_overrides(merged)
+
+
 def _resolve_subagent_llm_settings(role: str) -> dict:
     """Resolve subagent LLM settings from role config (incl. per-job overrides).
 
@@ -270,23 +345,12 @@ def _run_process(task, role, files, timeout_seconds):
         result_path = temp_path / "result.json"
         stdout_path = temp_path / "stdout.log"
         stderr_path = temp_path / "stderr.log"
-        from model_config import _role_overrides
-
-        config = {
-            "task": "\n".join(task_parts),
-            "role": role,
-            "model": llm_settings.get("model"),
-            "effort": llm_settings.get("effort"),
-            "llm_source": llm_settings.get("llm_source"),
-            "cursor_params": llm_settings.get("cursor_params"),
-            "max_tokens": llm_settings.get("max_tokens"),
-            "max_iterations": 10,
-            "max_feedback_loops": 6,
-            "max_retries": 2,
-        }
-        overrides = _role_overrides.get()
-        if overrides:
-            config["role_overrides"] = overrides
+        config = build_subagent_worker_config(
+            task="\n".join(task_parts),
+            role=role,
+            llm_settings=llm_settings,
+            parent_job_id=_parent_job_id(),
+        )
         print(
             f"[Subagent] spawn role={role} llm_source={llm_settings.get('llm_source')} "
             f"model={llm_settings.get('model')}",
