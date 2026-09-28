@@ -247,7 +247,7 @@ def build_subagent_worker_config(
         "cursor_params": llm_settings.get("cursor_params"),
         "max_tokens": llm_settings.get("max_tokens"),
         "max_iterations": _subagent_worker_max_iterations(role),
-        "max_feedback_loops": 6,
+        "max_feedback_loops": int(getattr(CFG, "MAX_FEEDBACK_LOOPS", 20) or 20),
         "max_retries": 2,
         "skip_task_rewrite": True,
     }

@@ -301,7 +301,7 @@ def _run_task_v2(
         max_iterations = _cfg_int("MAX_ITERATIONS", 20)
 
     if max_feedback_loops is None:
-        max_feedback_loops = _cfg_int("MAX_FEEDBACK_LOOPS", 5)
+        max_feedback_loops = _cfg_int("MAX_FEEDBACK_LOOPS", 20)
 
     if max_retries is None:
         max_retries = _cfg_int("MAX_RETRIES", 3)
@@ -311,6 +311,9 @@ def _run_task_v2(
     print(f"model={model}")
     print(f"llm_source={llm_source}")
     print(f"effort={effort}")
+    print(f"max_iterations={max_iterations}")
+    print(f"max_feedback_loops={max_feedback_loops}")
+    print(f"max_retries={max_retries}")
 
     ensure_memory_files()
 

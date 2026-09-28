@@ -769,6 +769,7 @@ def normalize_submission(data):
         SUBAGENT_ROLES,
         _normalize_role_entry,
     )
+    from modules.cfg import CFG
     planner=get_role_config('main_planner')
     llm_source=str(data.get('llm_source') or data.get('source') or planner.get('source') or 'opencode').strip().lower()
     if llm_source == 'relay':
@@ -779,7 +780,7 @@ def normalize_submission(data):
     cursor_params=data.get('cursor_params') if isinstance(data.get('cursor_params'), list) else planner.get('cursor_params')
     try: max_tokens=int(data.get('max_tokens') if data.get('max_tokens') is not None else planner.get('max_tokens') or DEFAULT_MAX_TOKENS)
     except Exception: max_tokens=int(planner.get('max_tokens') or DEFAULT_MAX_TOKENS)
-    out={'task':final_task(str(prompt).strip(),files,groups),'original_prompt':str(prompt).strip(),'selected_files':files,'selected_registry_groups':groups,'llm_source':llm_source,'model':model,'effort':effort,'max_tokens':max_tokens,'shell_instruction_prompt':data.get('shell_instruction_prompt') or DEFAULT_SHELL,'max_iterations':data.get('max_iterations'),'max_feedback_loops':data.get('max_feedback_loops'),'max_retries':data.get('max_retries')}
+    out={'task':final_task(str(prompt).strip(),files,groups),'original_prompt':str(prompt).strip(),'selected_files':files,'selected_registry_groups':groups,'llm_source':llm_source,'model':model,'effort':effort,'max_tokens':max_tokens,'shell_instruction_prompt':data.get('shell_instruction_prompt') or DEFAULT_SHELL,'max_iterations':data.get('max_iterations') if data.get('max_iterations') is not None else int(getattr(CFG,'MAX_ITERATIONS',20) or 20),'max_feedback_loops':data.get('max_feedback_loops') if data.get('max_feedback_loops') is not None else int(getattr(CFG,'MAX_FEEDBACK_LOOPS',20) or 20),'max_retries':data.get('max_retries') if data.get('max_retries') is not None else int(getattr(CFG,'MAX_RETRIES',2) or 2)}
     if isinstance(cursor_params, list) and cursor_params:
         out['cursor_params']=cursor_params
     raw_overrides=data.get('role_overrides') if isinstance(data.get('role_overrides'), dict) else {}
