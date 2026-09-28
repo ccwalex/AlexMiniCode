@@ -504,11 +504,6 @@ def call_llm_opencode(
                 headers,
                 timeout,
             )
-            if candidate != primary_transport:
-                print(
-                    f"[OpenCode] {model_id}: retried with transport "
-                    f"'{candidate}' after '{primary_transport}' endpoint mismatch"
-                )
             break
         except OpenCodeEndpointMismatch as exc:
             last_mismatch = exc
@@ -518,12 +513,23 @@ def call_llm_opencode(
 
     _log_cache_usage(raw if isinstance(raw, dict) else {}, model_id, transport)
 
+    transport_fallback_used = transport != primary_transport
+    if transport_fallback_used:
+        print(
+            f"[OpenCode] {model_id}: routed via transport '{transport}' "
+            f"({endpoint_path}) after primary '{primary_transport}' was unavailable",
+            flush=True,
+        )
+
     return {
         "content": text,
         "source": "opencode",
         "model": model_id,
         "transport": transport,
         "endpoint_path": endpoint_path,
+        "primary_transport": primary_transport,
+        "transport_source": routing.get("transport_source"),
+        "transport_fallback_used": transport_fallback_used,
         "session_id": session,
         "raw": raw,
     }

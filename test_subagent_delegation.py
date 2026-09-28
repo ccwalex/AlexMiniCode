@@ -16,7 +16,7 @@ import modules.build_prompt_v2 as prompt_module
 import modules.execute_api_call as api_module
 import modules.run_task_v2 as task_module
 import modules.subagent_runner as runner
-from modules.model_config import get_role_config, role_override_scope
+from modules.model_config import get_role_config, job_llm_config_scope, role_override_scope
 from modules.parse_api_plan import parse_api_plan
 from modules.build_feedback_context import subagent_feedback_from_execution_result
 
@@ -456,6 +456,37 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(cfg["max_tokens"], 1111)
         self.assertNotEqual(planner.get("model"), "job-review")
         self.assertNotEqual(get_role_config("subagent_review")["model"], "job-review")
+
+    def test_subagent_llm_settings_prefer_role_source_over_job_source(self):
+        with job_llm_config_scope(llm_source="cursor", model="composer-2.5"), role_override_scope(
+            {
+                "subagent_review": {
+                    "source": "opencode",
+                    "model": "deepseek-v4-flash",
+                    "effort": "m",
+                    "max_tokens": 8192,
+                }
+            }
+        ):
+            settings = runner._resolve_subagent_llm_settings("review")
+        self.assertEqual(settings["llm_source"], "opencode")
+        self.assertEqual(settings["model"], "deepseek-v4-flash")
+        self.assertIsNone(settings["cursor_params"])
+
+    def test_subagent_llm_settings_keep_role_source_when_matching_global_defaults(self):
+        with job_llm_config_scope(llm_source="cursor", model="composer-2.5"), role_override_scope(
+            {
+                "subagent_review": {
+                    "source": "opencode",
+                    "model": "deepseek-v4-flash",
+                    "effort": "m",
+                    "max_tokens": 8192,
+                }
+            }
+        ):
+            settings = runner._resolve_subagent_llm_settings("review")
+        self.assertEqual(settings["llm_source"], "opencode")
+        self.assertNotEqual(settings["llm_source"], "cursor")
 
     def test_subagent_skips_debug_and_returns_failure_feedback(self):
         failed_call = {"url": "/write", "payload": {"path": "a.py", "content": "x"}}

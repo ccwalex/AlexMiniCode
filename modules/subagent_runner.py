@@ -15,14 +15,7 @@ from contextvars import copy_context
 from pathlib import Path
 
 from cfg import CFG
-from model_config import (
-    _default_role_config,
-    _normalize_role_entry,
-    get_job_llm_config,
-    get_role_config,
-    load_model_config,
-    normalize_llm_source,
-)
+from model_config import get_job_llm_config, get_role_config, normalize_llm_source
 from read_file import read_file
 from render_file_context import render_file_context
 from subagent_capabilities import normalize_subagent_role
@@ -193,45 +186,28 @@ def _artifacts_from_result(result):
     return artifacts
 
 
-def _saved_role_defaults(role_name: str) -> dict:
-    config = load_model_config()
-    entry = config.get("roles", {}).get(role_name)
-    if isinstance(entry, dict):
-        return _normalize_role_entry(entry, role_name)
-    return _default_role_config(role_name)
-
-
 def _resolve_subagent_llm_settings(role: str) -> dict:
+    """Resolve subagent LLM settings from role config (incl. per-job overrides).
+
+    Subagent roles never inherit the parent job planner source/model when the
+    role config specifies them — only empty model falls back to the job model.
+    """
     role_name = ROLE_CONFIGS[role]
     role_cfg = get_role_config(role_name)
+    llm_source = normalize_llm_source(role_cfg.get("source")) or "opencode"
+    model = str(role_cfg.get("model") or "").strip()
+    cursor_params = role_cfg.get("cursor_params") if llm_source == "cursor" else None
+
     job_cfg = get_job_llm_config()
-    saved_defaults = _saved_role_defaults(role_name)
-
-    role_model = str(role_cfg.get("model") or "").strip()
-    job_model = str(job_cfg.get("model") or "").strip()
-    default_model = str(saved_defaults.get("model") or "").strip()
-    role_source = normalize_llm_source(role_cfg.get("source"))
     job_source = normalize_llm_source(job_cfg.get("llm_source"))
-    default_source = normalize_llm_source(saved_defaults.get("source"))
-
-    role_source_customized = bool(
-        role_source and default_source and role_source != default_source
-    )
-    role_model_customized = bool(
-        role_model and default_model and role_model != default_model
-    )
-
-    if role_source_customized or role_model_customized:
-        model = role_model
-        llm_source = role_source or job_source or "opencode"
-        cursor_params = role_cfg.get("cursor_params")
-    else:
-        model = job_model or role_model
-        llm_source = job_source or role_source or "opencode"
-        cursor_params = job_cfg.get("cursor_params") or role_cfg.get("cursor_params")
-
-    if llm_source != "cursor":
-        cursor_params = None
+    if not model:
+        model = str(job_cfg.get("model") or "").strip()
+    if job_source and job_source != llm_source:
+        print(
+            f"[Subagent] role={role} using role-configured source={llm_source} "
+            f"(job planner source is {job_source})",
+            flush=True,
+        )
 
     return {
         "model": model,

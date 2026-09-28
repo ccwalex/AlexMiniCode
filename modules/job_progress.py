@@ -241,6 +241,61 @@ def emit_dependency_substep(
     )
 
 
+def emit_llm_routing(
+    *,
+    role="",
+    llm_source="",
+    llm_model="",
+    transport="",
+    endpoint_path="",
+    primary_transport="",
+    transport_source="",
+    transport_fallback_used=None,
+    fallback_used=None,
+    fallback_from="",
+):
+    routing = {}
+    for key, value in (
+        ("llm_source", llm_source),
+        ("llm_model", llm_model),
+        ("transport", transport),
+        ("endpoint_path", endpoint_path),
+        ("primary_transport", primary_transport),
+        ("transport_source", transport_source),
+        ("transport_fallback_used", transport_fallback_used),
+        ("fallback_used", fallback_used),
+        ("fallback_from", fallback_from),
+    ):
+        if value in (None, "", False):
+            continue
+        routing[key] = value
+
+    if not routing:
+        return
+
+    detail_parts = []
+    if llm_source and llm_model:
+        detail_parts.append(f"{llm_source}:{llm_model}")
+    if transport and endpoint_path:
+        detail_parts.append(f"{transport}{endpoint_path}")
+    if transport_fallback_used and primary_transport:
+        detail_parts.append(f"transport fallback from {primary_transport}")
+    if fallback_used and fallback_from:
+        detail_parts.append(f"model fallback from {fallback_from}")
+
+    role_text = str(role or "").strip()
+    emit(
+        {
+            "event": "llm_routing",
+            "role": role_text,
+            "label": f"llm {role_text}".strip() if role_text else "llm",
+            "detail": " · ".join(detail_parts)[:500],
+            "llm_routing": routing,
+            "status": "done",
+        }
+    )
+
+
 def emit_substep(
     batch_id: str,
     index: int,
@@ -339,6 +394,15 @@ if __name__ == "__main__":
     emit_step(batch_id, 0, calls[0], "done")
     emit_step(batch_id, 1, calls[1], "running", parallel_group="review-1")
     emit_step(batch_id, 1, calls[1], "done", parallel_group="review-1")
+    emit_llm_routing(
+        role="main_planner",
+        llm_source="opencode",
+        llm_model="deepseek-v4-flash",
+        transport="messages",
+        endpoint_path="/messages",
+        primary_transport="chat",
+        transport_fallback_used=True,
+    )
 
     with open(steps_path, "r", encoding="utf-8") as handle:
         parsed = parse_steps_jsonl(handle.read())
