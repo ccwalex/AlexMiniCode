@@ -528,6 +528,28 @@ class SubagentDelegationTests(unittest.TestCase):
         self.assertEqual(config["role_overrides"]["main_planner"]["model"], "qwen3.8-flash")
         self.assertEqual(config["role_overrides"]["context_rewriter"]["source"], "opencode")
 
+    def test_implement_subagent_worker_gets_more_planner_loops(self):
+        llm_settings = {
+            "llm_source": "opencode",
+            "model": "deepseek-v4-flash",
+            "effort": "m",
+            "max_tokens": 8192,
+        }
+        review_cfg = runner.build_subagent_worker_config(
+            task="review task",
+            role="review",
+            llm_settings=llm_settings,
+        )
+        implement_cfg = runner.build_subagent_worker_config(
+            task="implement task",
+            role="implement",
+            llm_settings=llm_settings,
+        )
+        self.assertEqual(review_cfg["max_iterations"], 10)
+        self.assertEqual(implement_cfg["max_iterations"], 20)
+        self.assertEqual(runner._max_subagent_repair_loops("review"), 10)
+        self.assertEqual(runner._max_subagent_repair_loops("implement"), 20)
+
     def test_subagent_skips_debug_and_returns_failure_feedback(self):
         failed_call = {"url": "/write", "payload": {"path": "a.py", "content": "x"}}
         failed_result = {

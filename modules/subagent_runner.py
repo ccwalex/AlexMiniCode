@@ -148,9 +148,31 @@ def _summary_result(*, success, role, status, summary, artifacts=None, run_id=No
     return result
 
 
-def _max_subagent_repair_loops():
+def _max_subagent_repair_loops(role="review"):
     try:
-        return max(1, int(getattr(CFG, "MAX_SUBAGENT_REPAIR_LOOPS", 10) or 10))
+        role = normalize_subagent_role(role)
+    except ValueError:
+        role = "review"
+    if role == "implement":
+        try:
+            return max(1, int(getattr(CFG, "MAX_SUBAGENT_REPAIR_LOOPS", 20) or 20))
+        except Exception:
+            return 20
+    return 10
+
+
+def _subagent_worker_max_iterations(role: str) -> int:
+    try:
+        role = normalize_subagent_role(role)
+    except ValueError:
+        role = "review"
+    if role == "implement":
+        try:
+            return max(1, int(getattr(CFG, "MAX_ITERATIONS", 20) or 20))
+        except Exception:
+            return 20
+    try:
+        return max(1, int(getattr(CFG, "MAX_SUBAGENT_REVIEW_ITERATIONS", 10) or 10))
     except Exception:
         return 10
 
@@ -224,7 +246,7 @@ def build_subagent_worker_config(
         "llm_source": llm_settings.get("llm_source"),
         "cursor_params": llm_settings.get("cursor_params"),
         "max_tokens": llm_settings.get("max_tokens"),
-        "max_iterations": 10,
+        "max_iterations": _subagent_worker_max_iterations(role),
         "max_feedback_loops": 6,
         "max_retries": 2,
         "skip_task_rewrite": True,
@@ -502,7 +524,7 @@ def run_subagent(task, role="review", files=None, timeout_seconds=None, **kwargs
 
     original_task = task
     effective_task = task
-    max_repair_loops = _max_subagent_repair_loops()
+    max_repair_loops = _max_subagent_repair_loops(role)
     last_result = None
 
     for attempt in range(1, max_repair_loops + 1):

@@ -298,7 +298,7 @@ def _run_task_v2(
     effort = normalize_effort(effort if effort is not None else planner_cfg["effort"])
 
     if max_iterations is None:
-        max_iterations = _cfg_int("MAX_ITERATIONS", 10)
+        max_iterations = _cfg_int("MAX_ITERATIONS", 20)
 
     if max_feedback_loops is None:
         max_feedback_loops = _cfg_int("MAX_FEEDBACK_LOOPS", 5)
