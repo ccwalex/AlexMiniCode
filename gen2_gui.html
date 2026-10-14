@@ -1017,6 +1017,7 @@ async function refreshEverything(){
       selectedMeta.textContent='';
       planProgress.innerHTML='Select a job to see live step progress.';
       logs.textContent='Select a job.';
+      logOffsets={stdout:null,stderr:null};logJobId=null;
     }
   }
 }
@@ -1094,17 +1095,44 @@ function renderPlanProgress(progress){
   planProgressEl.innerHTML=html||'<div class="muted">Waiting for plan steps...</div>';
   if(!progressUserScrolled) planProgressEl.scrollTop=planProgressEl.scrollHeight;
 }
+let logOffsets={stdout:null,stderr:null}, logJobId=null;
+const logViewEl=document.getElementById('logs');
 async function loadJob(id){
-  const [d,l,p]=await Promise.all([
+  const [d,p]=await Promise.all([
     api('/api/job/'+encodeURIComponent(id)),
-    api('/api/job/'+encodeURIComponent(id)+'/logs'),
     api('/api/job/'+encodeURIComponent(id)+'/progress').catch(()=>({snapshot:[],batches:{}}))
   ]);
   const s=d.status||{};
   selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';
   selectedMeta.textContent=s.reason||'';
   renderPlanProgress(p);
-  logs.textContent='=== STDOUT ===\n'+(l.stdout||'')+'\n\n=== STDERR ===\n'+(l.stderr||'');
+  await loadJobLogs(id);
+}
+async function loadJobLogs(id){
+  if(logJobId!==id){logOffsets={stdout:null,stderr:null};logJobId=id}
+  const qs=[];
+  if(logOffsets.stdout!=null) qs.push('stdout_offset='+logOffsets.stdout);
+  if(logOffsets.stderr!=null) qs.push('stderr_offset='+logOffsets.stderr);
+  const l=await api('/api/job/'+encodeURIComponent(id)+'/logs'+(qs.length?'?'+qs.join('&'):''));
+  let changed=false, cur=logViewEl.textContent||'';
+  for(const slot of ['stdout','stderr']){
+    const chunk=l[slot]||{};
+    if(chunk.offset==null) continue;
+    const atEnd=chunk.offset>=chunk.size&&!chunk.reset;
+    if(!chunk.text){ logOffsets[slot]=chunk.offset; continue; }
+    changed=true;
+    if(slot==='stdout'){
+      cur=(chunk.reset||logOffsets.stdout===null)?'=== STDOUT ===\n'+chunk.text:cur+chunk.text;
+    }else{
+      const marker='=== STDERR ===';
+      const idx=cur.indexOf(marker);
+      if(chunk.reset||idx<0){
+        cur=(idx<0?cur:cur.slice(0,idx))+'\n\n'+marker+'\n'+chunk.text;
+      }else cur+=chunk.text;
+    }
+    logOffsets[slot]=chunk.offset;
+  }
+  if(changed){logViewEl.textContent=cur;logViewEl.scrollTop=logViewEl.scrollHeight}
 }
 async function loadTracked(){const d=await api('/api/tracked_folders');tracked.innerHTML=(d.folders||[]).map(f=>`<div class="item"><b>${esc(f.folder_path)}</b> [${esc(f.code_type)}]<div class="muted">${esc(f.metadata_path)}</div><button class="secondary" onclick="removeTracked('${esc(f.folder_path)}')">remove</button></div>`).join('')||'<div class="muted">No tracked folders.</div>';await loadRegistryContexts()}
 async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}

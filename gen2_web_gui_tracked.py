@@ -48,10 +48,39 @@ def write_json(path,obj):
 def write_text(path,text):
     p=Path(path); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(str(text),encoding='utf-8')
 def tail(path,n=50000):
+    # Efficient tail: seek near the end instead of reading the whole file.
     p=Path(path)
     if not p.exists(): return ''
-    t=p.read_text(encoding='utf-8',errors='replace')
-    return t if len(t)<=n else '[TRUNCATED]\n'+t[-n:]
+    import os as _os
+    with p.open('rb') as f:
+        f.seek(0,_os.SEEK_END); size=f.tell()
+        start=max(0,size-n)
+        f.seek(start)
+        data=f.read(n)
+    text=data.decode('utf-8',errors='replace')
+    return text if len(text)<=n else text[-n:]
+
+def log_slice(path, offset=None, cap=50000):
+    """Incremental log read. offset=None → full tail (back-compat dict w/ reset=True).
+    Otherwise return only bytes after `offset`. Offsets are byte offsets."""
+    p=Path(path)
+    if not p.exists():
+        return {'offset':0,'size':0,'reset':True,'truncated':False,'text':''}
+    size=p.stat().st_size
+    if offset is None:
+        start=max(0,size-cap)
+        with p.open('rb') as f:
+            f.seek(start); data=f.read(cap)
+        return {'offset':size,'size':size,'reset':True,'truncated':size>cap,
+                'text':data.decode('utf-8',errors='replace')}
+    start=offset
+    reset=False
+    if not isinstance(start,int) or start<0 or start>size:
+        start=max(0,size-cap); reset=True
+    with p.open('rb') as f:
+        f.seek(start); data=f.read(cap)
+    return {'offset':start+len(data),'size':size,'reset':reset,
+            'truncated':len(data)>=cap,'text':data.decode('utf-8',errors='replace')}
 def resolve_project_path(path):
     root=project_root().resolve(); p=(root/str(path)).resolve()
     if p!=root and root not in p.parents: raise ValueError(f'path escapes project root: {path}')
@@ -861,10 +890,12 @@ def job_payload(jid):
     d=job_dir(jid)
     if not d.exists(): raise FileNotFoundError('job not found')
     return {'status':read_json(d/'status.json',{}),'config':read_json(d/'config.json',{}),'result':read_json(d/'result.json',None),'effective_config':read_json(d/'effective_config.json',None)}
-def job_logs(jid):
+def job_logs(jid, stdout_offset=None, stderr_offset=None):
     d=job_dir(jid)
     if not d.exists(): raise FileNotFoundError('job not found')
-    return {'job_id':safe_job_id(jid),'stdout':tail(d/'stdout.log',50000),'stderr':tail(d/'stderr.log',20000)}
+    return {'job_id':safe_job_id(jid),
+            'stdout':log_slice(d/'stdout.log',stdout_offset,50000),
+            'stderr':log_slice(d/'stderr.log',stderr_offset,20000)}
 def job_progress(jid):
     d=job_dir(jid)
     if not d.exists(): raise FileNotFoundError('job not found')
@@ -1321,7 +1352,12 @@ class Handler(BaseHTTPRequestHandler):
                 return jresp(self,model_config_list_models(source))
             parts=[p for p in path.split('/') if p]
             if len(parts)==3 and parts[:2]==['api','job']: return jresp(self,job_payload(parts[2]))
-            if len(parts)==4 and parts[:2]==['api','job'] and parts[3]=='logs': return jresp(self,job_logs(parts[2]))
+            if len(parts)==4 and parts[:2]==['api','job'] and parts[3]=='logs':
+                lp=parse_qs(q)
+                def _off(name):
+                    try: return int((lp.get(name) or [None])[0])
+                    except (TypeError,ValueError): return None
+                return jresp(self,job_logs(parts[2],_off('stdout_offset'),_off('stderr_offset')))
             if len(parts)==4 and parts[:2]==['api','job'] and parts[3]=='progress': return jresp(self,job_progress(parts[2]))
             return jresp(self,{'error':'not found'},404)
         except Exception as e: return jresp(self,{'error':str(e)},500)
