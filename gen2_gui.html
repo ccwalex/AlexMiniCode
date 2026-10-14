@@ -1017,7 +1017,7 @@ async function refreshEverything(){
       selectedMeta.textContent='';
       planProgress.innerHTML='Select a job to see live step progress.';
       logs.textContent='Select a job.';
-      logOffsets={stdout:null,stderr:null};logJobId=null;
+      resetLogViewState(null);
     }
   }
 }
@@ -1095,44 +1095,64 @@ function renderPlanProgress(progress){
   planProgressEl.innerHTML=html||'<div class="muted">Waiting for plan steps...</div>';
   if(!progressUserScrolled) planProgressEl.scrollTop=planProgressEl.scrollHeight;
 }
-let logOffsets={stdout:null,stderr:null}, logJobId=null;
+let logOffsets={stdout:null,stderr:null}, logBuffers={stdout:'',stderr:''}, logJobId=null, logStreamCaughtUp=false;
+const LOG_TERMINAL_STATUSES=new Set(['completed','failed','cancelled','done']);
 const logViewEl=document.getElementById('logs');
+let logUserScrolled=false;
+logViewEl.addEventListener('scroll',()=>{const el=logViewEl;logUserScrolled=el.scrollTop+el.clientHeight<el.scrollHeight-24});
+function resetLogViewState(id){
+  logJobId=id;
+  logOffsets={stdout:null,stderr:null};
+  logBuffers={stdout:'',stderr:''};
+  logStreamCaughtUp=false;
+  logUserScrolled=false;
+}
+function renderLogView(){
+  logViewEl.textContent='=== STDOUT ===\n'+logBuffers.stdout+'\n\n=== STDERR ===\n'+logBuffers.stderr;
+  if(!logUserScrolled) logViewEl.scrollTop=logViewEl.scrollHeight;
+}
 async function loadJob(id){
   const [d,p]=await Promise.all([
     api('/api/job/'+encodeURIComponent(id)),
     api('/api/job/'+encodeURIComponent(id)+'/progress').catch(()=>({snapshot:[],batches:{}}))
   ]);
   const s=d.status||{};
-  selectedTitle.textContent=id+' ['+(s.status||'unknown')+']';
+  const jobStatus=String(s.status||'unknown');
+  if(logJobId!==id) resetLogViewState(id);
+  selectedTitle.textContent=id+' ['+jobStatus+']';
   selectedMeta.textContent=s.reason||'';
   renderPlanProgress(p);
-  await loadJobLogs(id);
+  if(!logStreamCaughtUp || !LOG_TERMINAL_STATUSES.has(jobStatus)) await loadJobLogs(id, jobStatus);
 }
-async function loadJobLogs(id){
-  if(logJobId!==id){logOffsets={stdout:null,stderr:null};logJobId=id}
+async function loadJobLogs(id, jobStatus){
   const qs=[];
   if(logOffsets.stdout!=null) qs.push('stdout_offset='+logOffsets.stdout);
   if(logOffsets.stderr!=null) qs.push('stderr_offset='+logOffsets.stderr);
   const l=await api('/api/job/'+encodeURIComponent(id)+'/logs'+(qs.length?'?'+qs.join('&'):''));
-  let changed=false, cur=logViewEl.textContent||'';
+  let changed=false;
   for(const slot of ['stdout','stderr']){
     const chunk=l[slot]||{};
     if(chunk.offset==null) continue;
-    const atEnd=chunk.offset>=chunk.size&&!chunk.reset;
-    if(!chunk.text){ logOffsets[slot]=chunk.offset; continue; }
-    changed=true;
-    if(slot==='stdout'){
-      cur=(chunk.reset||logOffsets.stdout===null)?'=== STDOUT ===\n'+chunk.text:cur+chunk.text;
-    }else{
-      const marker='=== STDERR ===';
-      const idx=cur.indexOf(marker);
-      if(chunk.reset||idx<0){
-        cur=(idx<0?cur:cur.slice(0,idx))+'\n\n'+marker+'\n'+chunk.text;
-      }else cur+=chunk.text;
+    if(!chunk.text){
+      logOffsets[slot]=chunk.offset;
+      continue;
     }
+    changed=true;
+    logStreamCaughtUp=false;
+    const fresh=chunk.reset||logOffsets[slot]==null;
+    logBuffers[slot]=fresh?chunk.text:(logBuffers[slot]+chunk.text);
     logOffsets[slot]=chunk.offset;
   }
-  if(changed){logViewEl.textContent=cur;logViewEl.scrollTop=logViewEl.scrollHeight}
+  if(!changed){
+    const atEnd=['stdout','stderr'].every(slot=>{
+      const chunk=l[slot]||{};
+      if(chunk.offset==null) return true;
+      return chunk.offset>=chunk.size&&!chunk.reset;
+    });
+    if(atEnd && LOG_TERMINAL_STATUSES.has(jobStatus)) logStreamCaughtUp=true;
+    return;
+  }
+  renderLogView();
 }
 async function loadTracked(){const d=await api('/api/tracked_folders');tracked.innerHTML=(d.folders||[]).map(f=>`<div class="item"><b>${esc(f.folder_path)}</b> [${esc(f.code_type)}]<div class="muted">${esc(f.metadata_path)}</div><button class="secondary" onclick="removeTracked('${esc(f.folder_path)}')">remove</button></div>`).join('')||'<div class="muted">No tracked folders.</div>';await loadRegistryContexts()}
 async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}
