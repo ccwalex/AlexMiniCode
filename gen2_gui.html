@@ -138,7 +138,7 @@ Do not allow shell redirection for file writes.</textarea>
 <button class="secondary" onclick="loadTree()">Reload Tree</button>
 <div class="small">selected files: <span id="fileCount">0</span>; registries: <span id="regCount">0</span></div>
 <div class="file-tree-tools">
-  <input id="fileTreeFilter" placeholder="Filter files by path..." oninput="renderTree()">
+  <input id="fileTreeFilter" placeholder="Filter files by path..." oninput="scheduleRenderTree()">
   <label class="small"><input type="checkbox" id="includeAgent" onchange="loadTree()"> agent/</label>
   <label class="small"><input type="checkbox" id="includeAgentMemory" onchange="loadTree()"> agent_memory</label>
 </div>
@@ -159,7 +159,15 @@ Do not allow shell redirection for file writes.</textarea>
 <h3>Plan Progress</h3>
 <div id="planProgress" class="plan-progress muted">Select a job to see live step progress.</div>
 <h3>Logs</h3>
-<div id="logs" class="logs">Select a job.</div>
+<div id="logs" class="logs">
+<div id="logPlaceholder" class="muted">Select a job.</div>
+<div id="logStreams" hidden>
+<div class="log-section">=== STDOUT ===</div>
+<pre id="logStdout" class="log-stream"></pre>
+<div class="log-section">=== STDERR ===</div>
+<pre id="logStderr" class="log-stream"></pre>
+</div>
+</div>
 </div>
 </div>
 </div>
@@ -297,7 +305,10 @@ Do not allow shell redirection for file writes.</textarea>
 
 <script>
 let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set(), selectedQueuedJobs=new Set();
-let jobQueue=[], currentJobId=null, pollTimer=null;
+let jobQueue=[], currentJobId=null, pollTimer=null, refreshInFlight=false;
+let jobsListCache=[], jobsDomSignature='', progressDomSignature='';
+const POLL_INTERVAL_MS=4000;
+const LOG_DISPLAY_MAX=200000;
 let selectedDecisions=new Set(), discussionSession=null, injectedEntries=[], discussionBusy=false;
 let modelConfigState=null, modelOptionsCache={}, cursorCatalogCache=null;
 let opencodeState=null;
@@ -1001,40 +1012,83 @@ function toggleQueuedJob(id,checked){
 }
 async function submitJob(){const text=document.getElementById('prompt').value.trim();if(!text){alert('Prompt required');return}const modelSel=readModelSelection(jobModel);const payload={prompt:text,llm_source:jobSource.value,model:modelSel.model,effort:jobEffort.value,max_tokens:parseInt(jobMaxTokens.value||'16384',10),shell_instruction_prompt:shellPrompt.value,selected_files:[...selectedFiles],selected_registry_groups:[...selectedGroups],role_overrides:collectJobRoleOverrides()};if(jobSource.value==='cursor' && modelSel.cursor_params) payload.cursor_params=modelSel.cursor_params;const d=await api('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});selectedJob=d.job_id;document.getElementById('prompt').value='';await refreshEverything()}
 async function refreshEverything(){
+  if(refreshInFlight) return;
+  refreshInFlight=true;
   let tick=null;
   try{
-    tick=await api('/api/tick',{method:'POST'});
-    jobQueue=Array.isArray(tick.queue)?tick.queue:[];
-    currentJobId=tick.current?.job_id||null;
-  }catch(e){}
-  updateAgentRunningState(tick?.current);
-  await loadJobs();
-  if(selectedJob){
-    try{await loadJob(selectedJob)}
-    catch(e){
-      selectedJob=null;
-      selectedTitle.textContent='No job selected';
-      selectedMeta.textContent='';
-      planProgress.innerHTML='Select a job to see live step progress.';
-      logs.textContent='Select a job.';
-      resetLogViewState(null);
+    try{
+      tick=await api('/api/tick',{method:'POST'});
+      jobQueue=Array.isArray(tick.queue)?tick.queue:[];
+      currentJobId=tick.current?.job_id||null;
+    }catch(e){}
+    updateAgentRunningState(tick?.current);
+    await loadJobs();
+    if(selectedJob){
+      try{
+        const row=findJobInCache(selectedJob);
+        const jobStatus=String(row?.status||'unknown');
+        updateSelectedJobHeader(selectedJob, row, jobStatus);
+        if(jobNeedsLiveUpdates(selectedJob, jobStatus)) await loadJobDetails(selectedJob, jobStatus);
+      }catch(e){
+        selectedJob=null;
+        clearSelectedJobView();
+      }
     }
+  }finally{
+    refreshInFlight=false;
   }
 }
 async function refreshContext(){await refreshEverything();await loadTracked();await loadTree()}
+function findJobInCache(id){
+  return jobsListCache.find(j=>String(j.job_id||'')===String(id))||null;
+}
+function jobsListSignature(arr, queuedSet){
+  return arr.map(j=>{
+    const id=String(j.job_id||'');
+    const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId;
+    const checked=selectedQueuedJobs.has(id);
+    return `${id}:${j.status||''}:${j.updated_at||''}:${id===selectedJob}:${isQueued}:${checked}`;
+  }).join('|');
+}
 async function loadJobs(){
   const arr=await api('/api/jobs');
+  jobsListCache=Array.isArray(arr)?arr:[];
   const queuedSet=new Set(jobQueue);
   selectedQueuedJobs=new Set([...selectedQueuedJobs].filter(id=>queuedSet.has(id)&&id!==currentJobId));
-  jobs.innerHTML=arr.map(j=>{
+  const sig=jobsListSignature(jobsListCache, queuedSet);
+  if(sig===jobsDomSignature) return jobsListCache;
+  jobsDomSignature=sig;
+  jobs.innerHTML=jobsListCache.map(j=>{
     const id=String(j.job_id||'');
     const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId;
     const checked=selectedQueuedJobs.has(id)?'checked':'';
     const cb=isQueued?`<input type="checkbox" ${checked} onclick="event.stopPropagation();toggleQueuedJob('${esc(id)}',this.checked)" title="Select to cancel"> `:'';
     return `<div class="job ${id===selectedJob?'selected':''}" onclick="selectJob('${esc(id)}')">${cb}<b>${esc(id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`;
   }).join('')||'<div class="job">No jobs.</div>';
+  return jobsListCache;
 }
-async function selectJob(id){selectedJob=id;await loadJobs();await loadJob(id)}
+function updateSelectedJobHeader(id, row, jobStatus){
+  const status=jobStatus||String(row?.status||'unknown');
+  selectedTitle.textContent=id+' ['+status+']';
+  selectedMeta.textContent=row?.reason||'';
+}
+function clearSelectedJobView(){
+  selectedTitle.textContent='No job selected';
+  selectedMeta.textContent='';
+  planProgressEl.innerHTML='Select a job to see live step progress.';
+  progressDomSignature='';
+  showLogPlaceholder();
+  resetLogViewState(null);
+}
+async function selectJob(id){
+  selectedJob=id;
+  await loadJobs();
+  const row=findJobInCache(id);
+  const jobStatus=String(row?.status||'unknown');
+  if(logJobId!==id) resetLogViewState(id);
+  updateSelectedJobHeader(id, row, jobStatus);
+  await loadJobDetails(id, jobStatus);
+}
 let progressUserScrolled=false;
 const planProgressEl=document.getElementById('planProgress');
 planProgressEl.addEventListener('scroll',()=>{const el=planProgressEl;progressUserScrolled=el.scrollTop+el.clientHeight<el.scrollHeight-24});
@@ -1065,7 +1119,16 @@ function progressRowLabel(row){
   if(row.event==='llm_routing') return String(row.label||`llm ${row.role||''}`).trim()||'llm routing';
   return String(row.action||row.url||'step');
 }
+function planProgressSignature(progress){
+  const snapshot=progress?.snapshot||[];
+  const last=snapshot[snapshot.length-1];
+  const tail=last?`${last.status||''}:${last.phase||''}:${last.detail||''}:${last.error||''}`:'';
+  return `${snapshot.length}:${progress?.active_batch_id||''}:${progress?.updated_at||''}:${tail}`;
+}
 function renderPlanProgress(progress){
+  const sig=planProgressSignature(progress);
+  if(sig===progressDomSignature) return;
+  progressDomSignature=sig;
   const snapshot=progress?.snapshot||[];
   const batches=progress?.batches||{};
   const activeBatch=progress?.active_batch_id;
@@ -1098,29 +1161,62 @@ function renderPlanProgress(progress){
 let logOffsets={stdout:null,stderr:null}, logBuffers={stdout:'',stderr:''}, logJobId=null, logStreamCaughtUp=false;
 const LOG_TERMINAL_STATUSES=new Set(['completed','failed','cancelled','done']);
 const logViewEl=document.getElementById('logs');
+const logPlaceholderEl=document.getElementById('logPlaceholder');
+const logStreamsEl=document.getElementById('logStreams');
+const logStdoutEl=document.getElementById('logStdout');
+const logStderrEl=document.getElementById('logStderr');
 let logUserScrolled=false;
 logViewEl.addEventListener('scroll',()=>{const el=logViewEl;logUserScrolled=el.scrollTop+el.clientHeight<el.scrollHeight-24});
+function jobNeedsLiveUpdates(id, jobStatus){
+  if(logJobId!==id) return true;
+  if(!LOG_TERMINAL_STATUSES.has(jobStatus)) return true;
+  if(!logStreamCaughtUp) return true;
+  return false;
+}
+function showLogPlaceholder(){
+  if(logPlaceholderEl) logPlaceholderEl.hidden=false;
+  if(logStreamsEl) logStreamsEl.hidden=true;
+}
+function showLogStreams(){
+  if(logPlaceholderEl) logPlaceholderEl.hidden=true;
+  if(logStreamsEl) logStreamsEl.hidden=false;
+}
+function logStreamEl(slot){return slot==='stdout'?logStdoutEl:logStderrEl}
+function trimLogDisplay(slot){
+  if(logBuffers[slot].length<=LOG_DISPLAY_MAX) return;
+  const overflow=logBuffers[slot].length-LOG_DISPLAY_MAX;
+  logBuffers[slot]=logBuffers[slot].slice(overflow);
+  const el=logStreamEl(slot);
+  if(el) el.textContent=logBuffers[slot];
+}
 function resetLogViewState(id){
   logJobId=id;
   logOffsets={stdout:null,stderr:null};
   logBuffers={stdout:'',stderr:''};
   logStreamCaughtUp=false;
   logUserScrolled=false;
+  if(id){
+    showLogStreams();
+    if(logStdoutEl) logStdoutEl.textContent='';
+    if(logStderrEl) logStderrEl.textContent='';
+  }else showLogPlaceholder();
 }
-function renderLogView(){
-  logViewEl.textContent='=== STDOUT ===\n'+logBuffers.stdout+'\n\n=== STDERR ===\n'+logBuffers.stderr;
+function appendLogChunk(slot, text, fresh){
+  const el=logStreamEl(slot);
+  if(!el) return;
+  showLogStreams();
+  if(fresh){
+    logBuffers[slot]=text;
+    el.textContent=text;
+  }else{
+    logBuffers[slot]+=text;
+    el.appendChild(document.createTextNode(text));
+  }
+  trimLogDisplay(slot);
   if(!logUserScrolled) logViewEl.scrollTop=logViewEl.scrollHeight;
 }
-async function loadJob(id){
-  const [d,p]=await Promise.all([
-    api('/api/job/'+encodeURIComponent(id)),
-    api('/api/job/'+encodeURIComponent(id)+'/progress').catch(()=>({snapshot:[],batches:{}}))
-  ]);
-  const s=d.status||{};
-  const jobStatus=String(s.status||'unknown');
-  if(logJobId!==id) resetLogViewState(id);
-  selectedTitle.textContent=id+' ['+jobStatus+']';
-  selectedMeta.textContent=s.reason||'';
+async function loadJobDetails(id, jobStatus){
+  const p=await api('/api/job/'+encodeURIComponent(id)+'/progress').catch(()=>({snapshot:[],batches:{}}));
   renderPlanProgress(p);
   if(!logStreamCaughtUp || !LOG_TERMINAL_STATUSES.has(jobStatus)) await loadJobLogs(id, jobStatus);
 }
@@ -1140,7 +1236,7 @@ async function loadJobLogs(id, jobStatus){
     changed=true;
     logStreamCaughtUp=false;
     const fresh=chunk.reset||logOffsets[slot]==null;
-    logBuffers[slot]=fresh?chunk.text:(logBuffers[slot]+chunk.text);
+    appendLogChunk(slot, chunk.text, fresh);
     logOffsets[slot]=chunk.offset;
   }
   if(!changed){
@@ -1150,9 +1246,7 @@ async function loadJobLogs(id, jobStatus){
       return chunk.offset>=chunk.size&&!chunk.reset;
     });
     if(atEnd && LOG_TERMINAL_STATUSES.has(jobStatus)) logStreamCaughtUp=true;
-    return;
   }
-  renderLogView();
 }
 async function loadTracked(){const d=await api('/api/tracked_folders');tracked.innerHTML=(d.folders||[]).map(f=>`<div class="item"><b>${esc(f.folder_path)}</b> [${esc(f.code_type)}]<div class="muted">${esc(f.metadata_path)}</div><button class="secondary" onclick="removeTracked('${esc(f.folder_path)}')">remove</button></div>`).join('')||'<div class="muted">No tracked folders.</div>';await loadRegistryContexts()}
 async function addTracked(){systemStatus.textContent=JSON.stringify(await api('/api/tracked_folders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder_path:trackFolder.value,code_type:trackType.value})}),null,2);await loadTracked()}
@@ -1244,6 +1338,11 @@ function bindTreeEvents(){
       renderTree();
     });
   });
+}
+let renderTreeTimer=null;
+function scheduleRenderTree(){
+  if(renderTreeTimer) clearTimeout(renderTreeTimer);
+  renderTreeTimer=setTimeout(()=>{renderTreeTimer=null;renderTree()},150);
 }
 function renderTree(){
   if(!fileTreeData || fileTreeData.error){
@@ -1470,7 +1569,11 @@ async function confirmResolved(){
   closeResolveModal();
 }
 
-pollTimer=setInterval(()=>{if(executionMode.classList.contains('active')) refreshEverything()},2000);
+pollTimer=setInterval(()=>{
+  if(!executionMode.classList.contains('active')) return;
+  if(refreshInFlight) return;
+  refreshEverything();
+},POLL_INTERVAL_MS);
 renderJobSubagentConfig();
 refreshEverything();loadTracked();loadTree();loadModelConfigSummary();
 </script>
