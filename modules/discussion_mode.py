@@ -21,6 +21,13 @@ from read_file import read_file
 from conflict import decision_path, DECISION_REL_PATH
 from model_config import get_role_config
 from cursor_model_selection import normalize_cursor_params
+from planning_tool_calls import (
+    PLANNING_TOOL_LOOP_CAP,
+    execute_planning_review_subagents,
+    format_planning_subagent_results,
+    format_planning_tool_error,
+    parse_planning_tool_calls,
+)
 
 MODULE_METADATA = {
     "name": "discussion_mode",
@@ -91,6 +98,22 @@ Discussion rules:
   documents clearer, more consistent, and actionable for the execution agent.
 - Do not invent filesystem changes outside these two documents.
 - Do not discuss implementation details unrelated to resolving the selected issues.
+
+Review /subagent tool (inspect the repo during planning):
+- Use the usual Gen2 /subagent tool with role=review only. Implement is not allowed
+  in planning discussion.
+- When you need to survey, trace, or compare code, emit ONLY a <tool_call> wrapper
+  and no user-facing prose in that turn:
+  <tool_call>
+  {"url": "/subagent", "payload": {"task": "self-contained review brief", "role": "review", "files": ["optional/path.py"], "timeout_seconds": 1200}}
+  </tool_call>
+- Payload: task (required), role must be "review", files (optional list of starting
+  paths), timeout_seconds (optional). You may emit a JSON list of review calls inside
+  one wrapper; they run in parallel.
+- The child sees only the task brief and attached files — not this discussion.
+- You receive a bounded <subagent_result> summary. Then either reply to the user or
+  issue another <tool_call>.
+- When talking to the user, emit no <tool_call>. Use <project>/<plan> as usual.
 
 Finalization rules (when the user sends exactly [END]):
 - The user has finished discussion and wants final revised documents.
@@ -596,8 +619,36 @@ def _call_discussion_llm(
             result["discussion_cursor_mode"] = "continue"
             return result
         except Exception as exc:
-            print(f"[Discussion Cursor] continuation failed: {exc}; re-bootstrapping")
-            clear_cursor_conversation_session(session)
+            print(
+                f"[Discussion Cursor] continuation failed: {exc}; "
+                "retrying Agent.resume without disposing the agent"
+            )
+            from call_llm_cursor import forget_cached_agent_handle
+
+            forget_cached_agent_handle(agent_id)
+            try:
+                result = continue_cursor_conversation(
+                    agent_id,
+                    send_message,
+                    model=model,
+                    thinking=thinking,
+                    max_tokens=int(max_tokens),
+                    cursor_params=cursor_params,
+                )
+                _persist_cursor_session_fields(
+                    session,
+                    agent_id=result.get("agent_id") or agent_id,
+                    model=model,
+                    cursor_params=cursor_params,
+                    context_hash=context_hash,
+                )
+                result["discussion_cursor_mode"] = "continue"
+                return result
+            except Exception as retry_exc:
+                print(
+                    f"[Discussion Cursor] resume retry failed: {retry_exc}; "
+                    "re-bootstrapping without closing the previous agent"
+                )
 
     try:
         result = bootstrap_cursor_conversation(
@@ -635,6 +686,85 @@ def _call_discussion_llm(
             result = dict(result)
             result["discussion_cursor_mode"] = "one_shot_fallback"
         return result
+
+
+def _follow_up_planning_llm(
+    *,
+    session: dict,
+    settings: dict,
+    llm_messages: list[dict],
+    follow_up: str,
+    context_hash: str,
+    thinking: str,
+    max_tokens: int,
+) -> dict:
+    cursor_params = normalize_cursor_params(get_role_config("discussion").get("cursor_params"))
+    can_continue = (
+        str(settings.get("source") or "").strip().lower() == "cursor"
+        and _can_continue_cursor_session(session, settings["model"], cursor_params)
+    )
+    return _call_discussion_llm(
+        session=session,
+        settings=settings,
+        llm_messages=llm_messages,
+        send_message=follow_up,
+        context_hash=context_hash,
+        thinking=thinking,
+        max_tokens=max_tokens,
+        can_continue=can_continue,
+    )
+
+
+def _run_planning_tool_loop(
+    *,
+    session: dict,
+    settings: dict,
+    llm_messages: list[dict],
+    raw,
+    context_hash: str,
+    thinking: str,
+    max_tokens: int,
+) -> tuple[dict, str]:
+    assistant_text = _response_text(raw)
+    cycles = 0
+
+    while cycles < PLANNING_TOOL_LOOP_CAP:
+        parsed = parse_planning_tool_calls(assistant_text)
+        if not parsed.get("has_tool_call"):
+            return raw, assistant_text
+
+        cycles += 1
+        if parsed.get("error"):
+            follow_up = format_planning_tool_error(parsed["error"])
+        else:
+            results = execute_planning_review_subagents(parsed.get("calls") or [])
+            follow_up = format_planning_subagent_results(results)
+
+        llm_messages = list(llm_messages) + [
+            {"role": "assistant", "content": assistant_text},
+            {"role": "user", "content": follow_up},
+        ]
+        raw = _follow_up_planning_llm(
+            session=session,
+            settings=settings,
+            llm_messages=llm_messages,
+            follow_up=follow_up,
+            context_hash=context_hash,
+            thinking=thinking,
+            max_tokens=max_tokens,
+        )
+        assistant_text = _response_text(raw)
+
+    parsed = parse_planning_tool_calls(assistant_text)
+    if parsed.get("has_tool_call"):
+        assistant_text = (
+            "Planning inspection loop reached its limit. "
+            "Reply based on the review results already gathered."
+        )
+        if isinstance(raw, dict):
+            raw = dict(raw)
+            raw["content"] = assistant_text
+    return raw, assistant_text
 
 
 def discussion_context(defaults: dict | None = None) -> dict:
@@ -742,12 +872,19 @@ def discussion_send_message(
             max_tokens=int(max_tokens),
             can_continue=can_continue,
         )
+        raw, assistant_text = _run_planning_tool_loop(
+            session=session,
+            settings=settings,
+            llm_messages=llm_messages,
+            raw=raw,
+            context_hash=context_hash,
+            thinking=thinking,
+            max_tokens=int(max_tokens),
+        )
     except Exception as e:
         session["messages"].pop()
         save_session(session)
         return {"success": False, "error": str(e), "session": session}
-
-    assistant_text = _response_text(raw)
     session["messages"].append(
         {"role": "assistant", "content": assistant_text, "at": _now_iso()}
     )
@@ -862,6 +999,8 @@ Step 1: fix ambiguity
     assert "<selected_decisions>" in prompt
     assert "<project>" in prompt
     assert "ambiguous scope" in prompt
+    assert "<tool_call>" in prompt
+    assert "/subagent" in prompt
 
     settings = normalize_discussion_settings(model="pro", effort="h", max_tokens=8192)
     assert settings["model"] == "pro"
@@ -888,6 +1027,9 @@ Step 1: fix ambiguity
     assert update.startswith("<context_update>")
     assert "<selected_decisions>" in update
 
+    import tempfile
+
+    CFG.PROJECT_ROOT = tempfile.mkdtemp(prefix="discussion_mode_selftest_")
     session = reset_session()
     assert session.get("phase") == "chat"
     assert session.get("has_pending_proposals") is False
