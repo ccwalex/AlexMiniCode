@@ -1117,6 +1117,36 @@ def refresh_all():
         })
     """
     return out
+def update_registry_api():
+    ensure_module_path()
+
+    out = {
+        "success": True,
+        "results": []
+    }
+
+    try:
+        from modules.update_registry import update_registry
+
+        ok, msg = update_registry()
+        out["results"].append({
+            "name": "update_registry",
+            "success": bool(ok),
+            "message": str(msg),
+        })
+
+        if not ok:
+            out["success"] = False
+
+    except Exception as e:
+        out["success"] = False
+        out["results"].append({
+            "name": "update_registry",
+            "success": False,
+            "error": str(e),
+        })
+
+    return out
 def git_action(data):
     action=str(data.get('action','status')); mp={'status':['status','--short'],'diff':['diff'],'log':['log','--oneline','--graph','--decorate','--all','-n','30'],'add_all':['add','.']}
     if action=='commit':
@@ -1370,6 +1400,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/tick': return jresp(self,tick())
             if path=='/api/init': return jresp(self,init_agent())
             if path=='/api/refresh_all_registries': return jresp(self,refresh_all())
+            if path=='/api/update_registry': return jresp(self,update_registry_api())
             if path=='/api/tracked_folders/add': return jresp(self,add_tracked(data))
             if path=='/api/tracked_folders/remove': return jresp(self,remove_tracked(data))
             if path == "/api/stop_current_job":

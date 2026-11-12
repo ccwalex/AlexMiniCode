@@ -3,7 +3,7 @@ from is_tracked import is_tracked
 from infer_code_type import infer_code_type
 from meta_caller import meta_caller
 from meta_writer import meta_writer
-from refresh_registry import refresh_registry
+from update_registry import update_registry
 
 MODULE_METADATA = {
     "name": "refresh_after_file_change",
@@ -94,7 +94,7 @@ def refresh_after_file_change(path, run_state=None, code_type=None):
         return result
 
     try:
-        reg_out = refresh_registry()
+        reg_out = update_registry()
         reg_success = True
         if isinstance(reg_out, tuple) and len(reg_out) > 0:
             reg_success = bool(reg_out[0])
@@ -104,12 +104,12 @@ def refresh_after_file_change(path, run_state=None, code_type=None):
             reg_success = False
 
         if not reg_success:
-            record(False, "refresh_registry indicated failure")
+            record(False, "update_registry indicated failure")
             return result
 
         result["registry_refreshed"] = True
     except Exception as e:
-        record(False, f"refresh_registry raised exception: {str(e)}")
+        record(False, f"update_registry raised exception: {str(e)}")
         return result
 
     record(True, "Metadata and registry refreshed successfully")
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     globals()["infer_code_type"] = lambda p, c: "py"
     globals()["meta_caller"] = lambda p, c: {"name": "example", "type": "function"}
     globals()["meta_writer"] = lambda m, p: None
-    globals()["refresh_registry"] = lambda: (True, "ok")
+    globals()["update_registry"] = lambda: (True, "ok")
 
     fake_run_state = FakeRunState()
 
