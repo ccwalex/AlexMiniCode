@@ -1,7 +1,7 @@
 MODULE_METADATA = {
     "name": "refresh_registry",
     "type": "function",
-    "description": "Refresh metadata registry by generating missing metadata files and rebuilding global metadata JSON.",
+    "description": "Regenerate all tracked-folder module metadata files and rebuild global metadata JSON.",
     "functions": [
         {
             "name": "refresh_registry",
@@ -116,16 +116,65 @@ def _write_metadata_fallback(metadata, expected_meta_full, rel_file_path):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def refresh_registry():
-    """
-    Refresh metadata registry by generating missing metadata files and rebuilding
-    global metadata JSON.
+def _rebuild_global_metadata(tracked_folders):
+    global_metadata = {}
 
-    Important:
-    - `TrackFolders` is the source of tracked folder configuration.
-    - Missing metadata is checked under each tracked folder's `metadata_path`.
-    - Files are scanned because they are inside a tracked folder; do not call
-      `is_tracked()` on absolute file directories, since that silently skips files.
+    for folder in tracked_folders:
+        meta_dir = folder.get("metadata_path") or folder.get("meta_path")
+
+        if not meta_dir:
+            continue
+
+        try:
+            abs_meta_dir = safe_path(meta_dir)
+        except Exception:
+            continue
+
+        if not os.path.exists(abs_meta_dir):
+            continue
+
+        for root, _, files in os.walk(abs_meta_dir):
+            for filename in files:
+                if not filename.endswith(".txt"):
+                    continue
+
+                meta_file_path = os.path.join(root, filename)
+
+                try:
+                    with open(meta_file_path, "r", encoding="utf-8") as f:
+                        meta_data = json.load(f)
+
+                    rel_meta_path = os.path.relpath(meta_file_path, CFG.PROJECT_ROOT)
+                    rel_meta_path = rel_meta_path.replace("\\", "/")
+
+                    key = rel_meta_path
+                    if isinstance(meta_data, dict):
+                        source_path = meta_data.get("path") or rel_meta_path
+                        global_metadata[key] = sanitize_module_metadata(
+                            meta_data,
+                            path=source_path,
+                        )
+                    else:
+                        continue
+
+                except Exception:
+                    continue
+
+    output_rel = os.path.join("agent_memory", "core", "metadata.json")
+    output_full = safe_path(output_rel)
+    os.makedirs(os.path.dirname(output_full), exist_ok=True)
+
+    with open(output_full, "w", encoding="utf-8") as f:
+        json.dump(global_metadata, f, indent=2, ensure_ascii=False)
+
+
+def run_registry_metadata_pass(overwrite=False, summary_verb="refreshed"):
+    """
+    Scan tracked folders, generate module metadata sidecars, rebuild metadata.json.
+
+    overwrite=False: generate metadata only when a sidecar is missing.
+    overwrite=True: regenerate metadata for every scanned file. On generate/write
+    failure, leave any existing sidecar in place.
     """
 
     track_manager = TrackFolders()
@@ -138,7 +187,6 @@ def refresh_registry():
     skipped = 0
     errors = []
 
-    # First pass: generate missing metadata files.
     for folder in tracked_folders:
         folder_path = folder.get("folder_path") or folder.get("folder") or folder.get("path")
         code_type = folder.get("code_type") or folder.get("type") or ""
@@ -191,7 +239,7 @@ def refresh_registry():
                         rel_path_in_folder
                     )
 
-                    if exists:
+                    if exists and not overwrite:
                         existing += 1
                         continue
 
@@ -214,15 +262,23 @@ def refresh_registry():
                         errors.append(f"Could not generate metadata for {rel_file_path}: {reason}")
                         continue
 
-                    # Canonical writer.
+                    writer_ok = True
                     try:
                         meta_writer(metadata, rel_file_path)
                     except Exception as e:
+                        writer_ok = False
                         errors.append(f"meta_writer failed for {rel_file_path}: {e}")
+                        if exists:
+                            failed += 1
+                            continue
 
-                    # Ensure the expected file exists even if meta_writer uses
-                    # a slightly different naming convention.
                     if not os.path.exists(expected_meta_full):
+                        _write_metadata_fallback(
+                            metadata=metadata,
+                            expected_meta_full=expected_meta_full,
+                            rel_file_path=rel_file_path,
+                        )
+                    elif overwrite and writer_ok:
                         _write_metadata_fallback(
                             metadata=metadata,
                             expected_meta_full=expected_meta_full,
@@ -238,59 +294,8 @@ def refresh_registry():
                         f"{traceback.format_exc()}"
                     )
 
-    # Second pass: rebuild global metadata JSON.
-    global_metadata = {}
-
-    for folder in tracked_folders:
-        meta_dir = folder.get("metadata_path") or folder.get("meta_path")
-
-        if not meta_dir:
-            continue
-
-        try:
-            abs_meta_dir = safe_path(meta_dir)
-        except Exception:
-            continue
-
-        if not os.path.exists(abs_meta_dir):
-            continue
-
-        for root, _, files in os.walk(abs_meta_dir):
-            for filename in files:
-                if not filename.endswith(".txt"):
-                    continue
-
-                meta_file_path = os.path.join(root, filename)
-
-                try:
-                    with open(meta_file_path, "r", encoding="utf-8") as f:
-                        meta_data = json.load(f)
-
-                    rel_meta_path = os.path.relpath(meta_file_path, CFG.PROJECT_ROOT)
-                    rel_meta_path = rel_meta_path.replace("\\", "/")
-
-                    key = rel_meta_path
-                    if isinstance(meta_data, dict):
-                        source_path = meta_data.get("path") or rel_meta_path
-                        global_metadata[key] = sanitize_module_metadata(
-                            meta_data,
-                            path=source_path,
-                        )
-                    else:
-                        continue
-
-                except Exception:
-                    continue
-
-    output_rel = os.path.join("agent_memory", "core", "metadata.json")
-
     try:
-        output_full = safe_path(output_rel)
-        os.makedirs(os.path.dirname(output_full), exist_ok=True)
-
-        with open(output_full, "w", encoding="utf-8") as f:
-            json.dump(global_metadata, f, indent=2, ensure_ascii=False)
-
+        _rebuild_global_metadata(tracked_folders)
     except Exception as e:
         failed += 1
         errors.append(f"Error writing global metadata: {str(e)}")
@@ -298,7 +303,7 @@ def refresh_registry():
     ok = failed == 0
 
     summary = (
-        "Metadata registry refreshed: "
+        f"Metadata registry {summary_verb}: "
         f"tracked_folders={len(tracked_folders)}, "
         f"scanned={scanned}, "
         f"existing={existing}, "
@@ -311,6 +316,21 @@ def refresh_registry():
         summary += "\n\nErrors:\n" + "\n".join(errors[:20])
 
     return ok, summary
+
+
+def refresh_registry():
+    """
+    Refresh metadata registry by regenerating all tracked module metadata files
+    and rebuilding global metadata JSON.
+
+    Important:
+    - `TrackFolders` is the source of tracked folder configuration.
+    - Existing sidecars are overwritten with newly generated metadata.
+    - On generate/write failure, existing sidecar files are left in place.
+    - Files are scanned because they are inside a tracked folder; do not call
+      `is_tracked()` on absolute file directories, since that silently skips files.
+    """
+    return run_registry_metadata_pass(overwrite=True, summary_verb="refreshed")
 
 
 if __name__ == "__main__":

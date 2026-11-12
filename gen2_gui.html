@@ -95,7 +95,8 @@ button:disabled{opacity:.55;cursor:wait}
 <div class="app">
 <div class="panel">
 <button onclick="initAgent()">Init</button>
-<button onclick="refreshAllRegistries()">Refresh Registries</button>
+<button onclick="refreshAllRegistries()" title="Regenerate all tracked module metadata">Refresh Registries</button>
+<button onclick="updateRegistry()" title="Generate missing module metadata only">Update Registry</button>
 <pre id="systemStatus" class="box small"></pre>
 <h2>Prompt</h2>
 <textarea id="prompt" rows="9"></textarea>
@@ -943,6 +944,7 @@ function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=
 
 async function initAgent(){systemStatus.textContent=JSON.stringify(await api('/api/init',{method:'POST'}),null,2);await refreshEverything()}
 async function refreshAllRegistries(){systemStatus.textContent=JSON.stringify(await api('/api/refresh_all_registries',{method:'POST'}),null,2);await loadRegistryContexts()}
+async function updateRegistry(){systemStatus.textContent=JSON.stringify(await api('/api/update_registry',{method:'POST'}),null,2);await loadRegistryContexts()}
 function updateAgentRunningState(current){
   const btn=document.getElementById('stopAgentBtn');
   if(!btn)return;

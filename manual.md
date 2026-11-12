@@ -526,10 +526,18 @@ curl -s -X POST http://127.0.0.1:7860/api/init
 
 ### `POST /api/refresh_all_registries`
 
-Refresh tracked-folder metadata registries.
+Regenerate all tracked-folder module metadata and rebuild the global registry.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7860/api/refresh_all_registries
+```
+
+### `POST /api/update_registry`
+
+Generate missing tracked-folder module metadata and rebuild the global registry. Existing sidecar files are left unchanged.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/update_registry
 ```
 
 ### `POST /api/git`
@@ -684,7 +692,8 @@ Notes:
 | GET | `/api/job/{id}/logs` | Job logs |
 | POST | `/api/tick` | Advance queue |
 | POST | `/api/init` | Initialize memory/storage |
-| POST | `/api/refresh_all_registries` | Refresh metadata registries |
+| POST | `/api/refresh_all_registries` | Regenerate all tracked module metadata |
+| POST | `/api/update_registry` | Generate missing tracked module metadata |
 | GET | `/api/file_tree` | Project file tree |
 | GET | `/api/tracked_folders` | List tracked folders |
 | POST | `/api/tracked_folders/add` | Add tracked folder |
