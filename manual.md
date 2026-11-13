@@ -379,7 +379,9 @@ Response:
 
 ### `POST /api/tick`
 
-Advance the queue: refresh current job state and start the next queued job if idle.
+Advance the queue: refresh foreground and background job state and start the next queued job if the foreground slot is idle.
+
+Response includes `current`, `background` (list of live background workers), `running_count`, `queue`, and `started`.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7860/api/tick
@@ -391,15 +393,33 @@ curl -s -X POST http://127.0.0.1:7860/api/tick
 
 ### `POST /api/stop_current_job`
 
-Stop the currently running worker process and mark the job `cancelled`.
+Stop the foreground worker process and mark that job `cancelled`. Background jobs keep running.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7860/api/stop_current_job
 ```
 
+### `POST /api/background_current_job`
+
+Send the foreground job to the background without killing it, then start the next queued job in the foreground if the parallel failsafe allows. Any number of background jobs may run at once. All of them write the same project tree.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/background_current_job
+```
+
+### `POST /api/stop_job`
+
+Stop one running job by id (foreground or background) without touching the other live workers.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/stop_job \
+  -H 'Content-Type: application/json' \
+  -d '{"job_id": "job_20260818_133200_aa11bb22"}'
+```
+
 ### `POST /api/stop_all_jobs`
 
-Stop the current job and clear all queued jobs.
+Stop the foreground job, every background job, and clear all queued jobs.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7860/api/stop_all_jobs
@@ -666,7 +686,8 @@ submit/subagent_run
 
 Notes:
 
-- Only one job runs at a time; others wait in `agent_memory/jobs/queue.json`.
+- One job occupies the foreground slot (`agent_memory/jobs/current.json`). Use **Background Current** to demote it onto `agent_memory/jobs/background.json` without stopping it; another queued or submitted job can then become foreground. Multiple background jobs may run in parallel with the foreground job. They all share the project workspace (no file leases). A high failsafe (`MAX_PARALLEL_JOBS`, default 16) blocks launching more workers. Git add/commit from the GUI is refused while more than one job is running.
+- Other jobs wait in `agent_memory/jobs/queue.json` until the foreground slot is free.
 - Job artifacts live under `agent_memory/jobs/{job_id}/`:
   - `config.json`
   - `status.json`
@@ -699,8 +720,10 @@ Notes:
 | POST | `/api/tracked_folders/add` | Add tracked folder |
 | POST | `/api/tracked_folders/remove` | Remove tracked folder |
 | GET | `/api/registry_contexts` | List registry contexts |
-| POST | `/api/stop_current_job` | Stop running job |
-| POST | `/api/stop_all_jobs` | Stop all and clear queue |
+| POST | `/api/stop_current_job` | Stop foreground job |
+| POST | `/api/background_current_job` | Background foreground job and start next |
+| POST | `/api/stop_job` | Stop one running job by id |
+| POST | `/api/stop_all_jobs` | Stop all live jobs and clear queue |
 | POST | `/api/cancel_queued_jobs` | Cancel selected queued jobs |
 | POST | `/api/clear_completed_jobs` | Delete completed/failed/cancelled jobs |
 | POST | `/api/shutdown` | Stop all jobs and shut down server |
@@ -716,7 +739,7 @@ Notes:
 |---------|--------------|-----|
 | Connection refused | Server not running | Start `gen2_web_gui_tracked.py` |
 | `prompt required` | Missing prompt | Include `"prompt": "..."` |
-| Job stays `queued` | Another job is running | Wait, or stop current job |
+| Job stays `queued` | Foreground slot is occupied, or parallel failsafe is hit | Background or stop the current job, or wait |
 | `timed_out: true` | Task exceeded `timeout_seconds` | Increase timeout or inspect logs |
 | Empty registry context | Tracked folder not configured | Add tracked folder and refresh registries |
 | Path errors | Non-project-relative path | Paths must be relative to project root |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gen2 web GUI with sequential queue, tracked-folder registry contexts, file-tree injection, logs, and git."""
+"""Gen2 web GUI with job queue, background runners, tracked-folder registry contexts, file-tree injection, logs, and git."""
 import argparse, json, os, shutil, signal, subprocess, sys, threading, time, uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +11,7 @@ Allow running Python scripts.
 Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes."""
 TERMINAL={'completed','failed','cancelled'}
+MAX_PARALLEL_JOBS=16
 _http_server = None
 _jobs_lock = threading.RLock()
 EXCLUDE_DIRS={'.git','__pycache__','.ipynb_checkpoints','node_modules','.venv','venv','env','.pytest_cache','.mypy_cache','.cursor'}
@@ -33,6 +34,7 @@ def memory_dir(): return project_root()/'agent_memory'
 def jobs_dir(): return memory_dir()/'jobs'
 def queue_file(): return jobs_dir()/'queue.json'
 def current_file(): return jobs_dir()/'current.json'
+def background_file(): return jobs_dir()/'background.json'
 def now(): return datetime.now(timezone.utc).isoformat()
 def ensure_module_path():
     for p in (source_dir(),modules_dir()):
@@ -94,6 +96,7 @@ def ensure_storage():
     jobs_dir().mkdir(parents=True,exist_ok=True)
     if not isinstance(read_json(queue_file(),[]),list): write_json(queue_file(),[])
     if not isinstance(read_json(current_file(),{}),dict): write_json(current_file(),{})
+    if not isinstance(read_json(background_file(),[]),list): write_json(background_file(),[])
 def safe_job_id(j):
     if not isinstance(j,str) or not j.strip(): raise ValueError('empty job id')
     j=j.strip(); allowed=set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.')
@@ -118,6 +121,85 @@ def load_current():
     c=read_json(current_file(),{})
     return c if isinstance(c,dict) else {}
 def save_current(c): write_json(current_file(),c or {})
+def load_background():
+    bg=read_json(background_file(),[])
+    if not isinstance(bg,list): return []
+    out=[]; seen=set()
+    for e in bg:
+        n=_normalize_running_entry(e)
+        if not n: continue
+        jid=n['job_id']
+        if jid in seen: continue
+        seen.add(jid); out.append(n)
+    return out
+def save_background(entries):
+    out=[]
+    if isinstance(entries,list):
+        seen=set()
+        for e in entries:
+            n=_normalize_running_entry(e)
+            if not n or n['job_id'] in seen: continue
+            seen.add(n['job_id']); out.append(n)
+    write_json(background_file(),out)
+    return out
+def _normalize_running_entry(c):
+    if not isinstance(c,dict): return None
+    jid=c.get('job_id')
+    if not jid: return None
+    try: jid=safe_job_id(jid)
+    except Exception: return None
+    out=dict(c); out['job_id']=jid
+    return out
+def running_entries():
+    out=[]; seen=set()
+    cur=_normalize_running_entry(load_current())
+    if cur:
+        out.append(cur); seen.add(cur['job_id'])
+    for e in load_background():
+        if e['job_id'] in seen: continue
+        out.append(e); seen.add(e['job_id'])
+    return out
+def running_job_ids():
+    return [e['job_id'] for e in running_entries()]
+def running_count():
+    return len(running_job_ids())
+def _reap_job_entry(c):
+    """Return entry if still running; else mark finished from result.json and return None."""
+    c=_normalize_running_entry(c)
+    if not c: return None
+    jid,pid=c['job_id'],c.get('pid')
+    st=read_json(job_dir(jid)/'status.json',{}) or {}
+    if st.get('status') in TERMINAL: return None
+    if pid and alive(pid): return c
+    res=read_json(job_dir(jid)/'result.json',None)
+    if isinstance(res,dict):
+        if str(res.get('status') or '').lower()=='cancelled':
+            update_status(jid,status='cancelled',success=False,ended_at=st.get('ended_at') or now(),reason=res.get('reason','cancelled'))
+        else:
+            ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
+    else:
+        update_status(jid,status='failed',success=False,ended_at=now(),reason='worker process ended without result.json')
+    return None
+def refresh_background():
+    with _jobs_lock:
+        ensure_storage()
+        kept=[]
+        for e in load_background():
+            live=_reap_job_entry(e)
+            if live: kept.append(live)
+        return save_background(kept)
+def refresh_running():
+    with _jobs_lock:
+        cur=refresh_current()
+        bg=refresh_background()
+        return {'current':cur,'background':bg,'running_count':running_count()}
+def scheduler_snapshot():
+    return {
+        'queue':load_queue(),
+        'current':load_current() or {},
+        'background':load_background(),
+        'running_count':running_count(),
+    }
 def update_status(j,**kw):
     p=job_dir(j)/'status.json'; st=read_json(p,{})
     if not isinstance(st,dict): st={}
@@ -535,6 +617,32 @@ def terminate_process_group(pid, grace_seconds=2.0):
 def stop_current_job():
     with _jobs_lock:
         return _stop_current_job_unlocked()
+def _cancel_worker_unlocked(jid, pid, reason_prefix="cancelled by user"):
+    ok, msg = terminate_process_group(pid)
+    try:
+        jid = safe_job_id(jid)
+    except Exception as e:
+        return {
+            "success": False,
+            "stopped": False,
+            "job_id": jid,
+            "pid": pid,
+            "reason": f"invalid job id: {e}",
+        }
+    update_status(
+        jid,
+        status="cancelled",
+        success=False,
+        ended_at=now(),
+        reason=f"{reason_prefix}: {msg}",
+    )
+    return {
+        "success": bool(ok),
+        "stopped": True,
+        "job_id": jid,
+        "pid": pid,
+        "reason": msg,
+    }
 def _stop_current_job_unlocked():
     ensure_storage()
 
@@ -559,30 +667,82 @@ def _stop_current_job_unlocked():
             "reason": f"invalid current job id: {e}",
         }
 
-    ok, msg = terminate_process_group(pid)
-
-    update_status(
-        jid,
-        status="cancelled",
-        success=False,
-        ended_at=now(),
-        reason=f"cancelled by user: {msg}",
-    )
-
+    result = _cancel_worker_unlocked(jid, pid)
     save_current({})
-
-    return {
-        "success": bool(ok),
-        "stopped": True,
-        "job_id": jid,
-        "pid": pid,
-        "reason": msg,
-    }
+    bg = [e for e in load_background() if e.get("job_id") != jid]
+    save_background(bg)
+    return result
+def _remove_background_job_unlocked(jid):
+    jid = safe_job_id(jid)
+    remaining = [e for e in load_background() if e.get("job_id") != jid]
+    save_background(remaining)
+    return remaining
+def stop_job(data):
+    with _jobs_lock:
+        ensure_storage()
+        refresh_running()
+        jid = str((data or {}).get("job_id", "")).strip()
+        if not jid:
+            raise ValueError("job_id required")
+        jid = safe_job_id(jid)
+        cur = _normalize_running_entry(load_current())
+        if cur and cur.get("job_id") == jid:
+            return _stop_current_job_unlocked()
+        for e in load_background():
+            if e.get("job_id") == jid:
+                result = _cancel_worker_unlocked(jid, e.get("pid"))
+                _remove_background_job_unlocked(jid)
+                return result
+        return {
+            "success": False,
+            "stopped": False,
+            "job_id": jid,
+            "reason": "job is not running",
+        }
+def background_current_job():
+    with _jobs_lock:
+        ensure_storage()
+        refresh_running()
+        cur = _normalize_running_entry(load_current())
+        if not cur:
+            return {
+                "success": True,
+                "backgrounded": False,
+                "reason": "no current job",
+                **scheduler_snapshot(),
+            }
+        bg = load_background()
+        if cur["job_id"] not in {e.get("job_id") for e in bg}:
+            entry = dict(cur)
+            entry["backgrounded_at"] = now()
+            bg.append(entry)
+            save_background(bg)
+        save_current({})
+        started = start_next()
+        snap = scheduler_snapshot()
+        return {
+            "success": True,
+            "backgrounded": True,
+            "old_job_id": cur["job_id"],
+            "started": started,
+            **snap,
+        }
 def stop_all_jobs():
     with _jobs_lock:
         ensure_storage()
 
         stop_result = _stop_current_job_unlocked()
+        bg = load_background()
+        stopped_background = []
+        save_background([])
+        for e in bg:
+            stopped_background.append(
+                _cancel_worker_unlocked(
+                    e.get("job_id"),
+                    e.get("pid"),
+                    reason_prefix="cancelled by user",
+                )
+            )
         queued = load_queue()
         save_queue([])
 
@@ -601,19 +761,20 @@ def stop_all_jobs():
         return {
             "success": True,
             "stopped_current": stop_result,
+            "stopped_background": stopped_background,
             "cleared_queue": queued,
             "queue_count": len(queued),
         }
 def cancel_queued_jobs(data):
     with _jobs_lock:
         ensure_storage()
+        refresh_running()
 
         job_ids = data.get("job_ids") if isinstance(data, dict) else None
         if not isinstance(job_ids, list) or not job_ids:
             raise ValueError("job_ids required")
 
-        cur = load_current()
-        current_id = cur.get("job_id")
+        running = set(running_job_ids())
         q = load_queue()
         cancelled = []
         skipped = []
@@ -634,7 +795,7 @@ def cancel_queued_jobs(data):
         queued_set = set(q)
         cancel_set = set()
         for jid in requested:
-            if jid == current_id:
+            if jid in running:
                 skipped.append({"job_id": jid, "reason": "currently running"})
                 continue
             if jid not in queued_set:
@@ -662,10 +823,9 @@ def cancel_queued_jobs(data):
 def clear_completed_jobs():
     with _jobs_lock:
         ensure_storage()
-        refresh_current()
+        refresh_running()
 
-        cur = load_current()
-        current_id = cur.get("job_id")
+        running = set(running_job_ids())
         queued = set(load_queue())
         removed = []
         skipped = []
@@ -677,7 +837,7 @@ def clear_completed_jobs():
                 jid = safe_job_id(ch.name)
             except Exception:
                 continue
-            if jid == current_id or jid in queued:
+            if jid in running or jid in queued:
                 skipped.append({"job_id": jid, "reason": "active or queued"})
                 continue
             st = read_json(ch / "status.json", {}) or {}
@@ -735,10 +895,9 @@ def restart_job(data):
         if not isinstance(config, dict):
             raise RuntimeError("job has no valid config.json")
 
-        # If restarting the currently running job, stop it first.
-        cur = load_current()
-        if cur.get("job_id") == jid:
-            _stop_current_job_unlocked()
+        # If restarting a live job, stop that worker first (foreground or background).
+        refresh_running()
+        stop_job({"job_id": jid})
 
         config = restart_config_from_job(d, config)
         new_jid = create_job(config)
@@ -844,30 +1003,26 @@ def create_job(config):
         q=load_queue(); q.append(jid); save_queue(q); return jid
 def refresh_current():
     with _jobs_lock:
-        c=load_current(); jid,pid=c.get('job_id'),c.get('pid')
-        if not jid: save_current({}); return None
-        try: jid=safe_job_id(jid)
-        except Exception: save_current({}); return None
-        st=read_json(job_dir(jid)/'status.json',{}) or {}
-        if st.get('status') in TERMINAL: save_current({}); return None
-        if pid and alive(pid): return c
-        res=read_json(job_dir(jid)/'result.json',None)
-        if isinstance(res,dict):
-            if str(res.get('status') or '').lower()=='cancelled':
-                update_status(jid,status='cancelled',success=False,ended_at=st.get('ended_at') or now(),reason=res.get('reason','cancelled'))
-            else:
-                ok=bool(res.get('success')); update_status(jid,status='completed' if ok else 'failed',success=ok,ended_at=st.get('ended_at') or now(),reason=res.get('reason','worker finished'))
-        else: update_status(jid,status='failed',success=False,ended_at=now(),reason='worker process ended without result.json')
-        save_current({}); return None
+        c=_normalize_running_entry(load_current())
+        live=_reap_job_entry(c) if c else None
+        if live:
+            save_current(live)
+            return live
+        save_current({})
+        return None
 def start_next():
     with _jobs_lock:
-        ensure_storage(); cur=refresh_current()
-        if cur and cur.get('job_id'): return {'started':False,'reason':'job already running','current':cur}
+        ensure_storage(); cur=refresh_current(); refresh_background()
+        if cur and cur.get('job_id'): return {'started':False,'reason':'job already running','current':cur,**scheduler_snapshot()}
+        if running_count()>=MAX_PARALLEL_JOBS:
+            return {'started':False,'reason':'parallel job limit','max_parallel_jobs':MAX_PARALLEL_JOBS,**scheduler_snapshot()}
         q=load_queue()
         while q:
             jid=q.pop(0)
             st=read_json(job_dir(jid)/'status.json',{}) or {}
             if st.get('status') in TERMINAL:
+                continue
+            if jid in set(running_job_ids()):
                 continue
             d=job_dir(jid); w=worker_script()
             save_queue(q)
@@ -876,9 +1031,9 @@ def start_next():
                 return {'started':False,'reason':'worker not found'}
             cmd=[sys.executable,'-u',str(w),'--job-dir',str(d.resolve())]
             p=subprocess.Popen(cmd,cwd=str(project_root()),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
-            cur={'job_id':jid,'pid':p.pid,'started_at':now(),'cmd':cmd}; save_current(cur); update_status(jid,status='running',success=None,pid=p.pid,started_at=cur['started_at'],reason='worker started'); return {'started':True,'current':cur,'reason':'worker started'}
+            cur={'job_id':jid,'pid':p.pid,'started_at':now(),'cmd':cmd}; save_current(cur); update_status(jid,status='running',success=None,pid=p.pid,started_at=cur['started_at'],reason='worker started'); return {'started':True,'current':cur,'reason':'worker started',**scheduler_snapshot()}
         save_queue(q)
-        return {'started':False,'reason':'queue empty','current':None}
+        return {'started':False,'reason':'queue empty','current':None,**scheduler_snapshot()}
 def list_jobs():
     ensure_storage(); out=[]
     for ch in jobs_dir().iterdir():
@@ -935,12 +1090,12 @@ def job_progress(jid):
     }
 def tick():
     with _jobs_lock:
-        refresh_current(); s=start_next(); return {'queue':load_queue(),'current':load_current(),'started':s}
+        refresh_running(); s=start_next(); return {**scheduler_snapshot(),'started':s}
 # subagent API (for calling gen2 from another agent)
 def subagent_status():
     with _jobs_lock:
         ensure_storage()
-        refresh_current()
+        refresh_running()
         cur = load_current()
         q = load_queue()
         current_job = None
@@ -949,6 +1104,12 @@ def subagent_status():
                 current_job = read_json(job_dir(cur['job_id']) / 'status.json', {})
             except Exception:
                 current_job = cur
+        background_jobs = []
+        for e in load_background():
+            try:
+                background_jobs.append(read_json(job_dir(e['job_id']) / 'status.json', {}) or e)
+            except Exception:
+                background_jobs.append(e)
         return {
             'success': True,
             'service': 'gen2_web_gui',
@@ -957,6 +1118,9 @@ def subagent_status():
             'queue': q,
             'current': cur,
             'current_job': current_job,
+            'background': load_background(),
+            'background_jobs': background_jobs,
+            'running_count': running_count(),
             'worker': str(worker_script()),
         }
 def _job_is_terminal(jid):
@@ -1149,6 +1313,20 @@ def update_registry_api():
     return out
 def git_action(data):
     action=str(data.get('action','status')); mp={'status':['status','--short'],'diff':['diff'],'log':['log','--oneline','--graph','--decorate','--all','-n','30'],'add_all':['add','.']}
+    mutating={'add_all','commit'}
+    if action in mutating:
+        with _jobs_lock:
+            refresh_running()
+            n=running_count()
+            if n>1:
+                return {
+                    'success':False,
+                    'cmd':'git '+action,
+                    'reason':'refusing git write while multiple jobs are running',
+                    'running_count':n,
+                    'current':load_current(),
+                    'background':load_background(),
+                }
     if action=='commit':
         msg=str(data.get('message','')).strip()
         if not msg: raise ValueError('commit message required')
@@ -1405,6 +1583,10 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/tracked_folders/remove': return jresp(self,remove_tracked(data))
             if path == "/api/stop_current_job":
                 return jresp(self, stop_current_job())
+            if path == "/api/background_current_job":
+                return jresp(self, background_current_job())
+            if path == "/api/stop_job":
+                return jresp(self, stop_job(data))
             
             if path == "/api/restart_current_job":
                 return jresp(self, restart_current_job())
