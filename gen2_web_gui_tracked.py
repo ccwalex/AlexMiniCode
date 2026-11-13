@@ -820,6 +820,93 @@ def cancel_queued_jobs(data):
             "queue": remaining,
             "queue_count": len(remaining),
         }
+def _spawn_job_unlocked(jid):
+    jid = safe_job_id(jid)
+    d = job_dir(jid)
+    w = worker_script()
+    if not w.exists():
+        update_status(jid, status="failed", success=False, ended_at=now(), reason=f"worker not found: {w}")
+        return None, "worker not found"
+    cmd = [sys.executable, "-u", str(w), "--job-dir", str(d.resolve())]
+    p = subprocess.Popen(cmd, cwd=str(project_root()), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    entry = {"job_id": jid, "pid": p.pid, "started_at": now(), "cmd": cmd}
+    update_status(jid, status="running", success=None, pid=p.pid, started_at=entry["started_at"], reason="worker started")
+    return entry, None
+def start_queued_jobs_parallel(data):
+    with _jobs_lock:
+        ensure_storage()
+        refresh_running()
+
+        job_ids = data.get("job_ids") if isinstance(data, dict) else None
+        if not isinstance(job_ids, list) or not job_ids:
+            raise ValueError("job_ids required")
+
+        running = set(running_job_ids())
+        q = load_queue()
+        queued_set = set(q)
+        started = []
+        skipped = []
+        requested = []
+        seen = set()
+
+        for raw in job_ids:
+            try:
+                jid = safe_job_id(str(raw).strip())
+            except Exception as e:
+                skipped.append({"job_id": raw, "reason": f"invalid job id: {e}"})
+                continue
+            if jid in seen:
+                continue
+            seen.add(jid)
+            requested.append(jid)
+
+        eligible = []
+        for jid in requested:
+            if jid in running:
+                skipped.append({"job_id": jid, "reason": "currently running"})
+                continue
+            if jid not in queued_set:
+                skipped.append({"job_id": jid, "reason": "not in queue"})
+                continue
+            st = read_json(job_dir(jid) / "status.json", {}) or {}
+            if st.get("status") in TERMINAL:
+                skipped.append({"job_id": jid, "reason": "not queued"})
+                continue
+            eligible.append(jid)
+
+        bg = load_background()
+        cur = _normalize_running_entry(load_current())
+        started_set = set()
+        for jid in eligible:
+            if running_count() >= MAX_PARALLEL_JOBS:
+                skipped.append({"job_id": jid, "reason": "parallel job limit"})
+                continue
+            entry, err = _spawn_job_unlocked(jid)
+            if err:
+                skipped.append({"job_id": jid, "reason": err})
+                started_set.add(jid)
+                continue
+            if cur:
+                entry["backgrounded_at"] = now()
+                bg.append(entry)
+                save_background(bg)
+                slot = "background"
+            else:
+                save_current(entry)
+                cur = entry
+                slot = "current"
+            started.append({"job_id": jid, "pid": entry.get("pid"), "slot": slot})
+            started_set.add(jid)
+
+        remaining = [x for x in q if x not in started_set]
+        save_queue(remaining)
+        return {
+            "success": True,
+            "started": started,
+            "started_count": len(started),
+            "skipped": skipped,
+            **scheduler_snapshot(),
+        }
 def clear_completed_jobs():
     with _jobs_lock:
         ensure_storage()
@@ -1024,14 +1111,12 @@ def start_next():
                 continue
             if jid in set(running_job_ids()):
                 continue
-            d=job_dir(jid); w=worker_script()
             save_queue(q)
-            if not w.exists():
-                update_status(jid,status='failed',success=False,ended_at=now(),reason=f'worker not found: {w}')
-                return {'started':False,'reason':'worker not found'}
-            cmd=[sys.executable,'-u',str(w),'--job-dir',str(d.resolve())]
-            p=subprocess.Popen(cmd,cwd=str(project_root()),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
-            cur={'job_id':jid,'pid':p.pid,'started_at':now(),'cmd':cmd}; save_current(cur); update_status(jid,status='running',success=None,pid=p.pid,started_at=cur['started_at'],reason='worker started'); return {'started':True,'current':cur,'reason':'worker started',**scheduler_snapshot()}
+            entry,err=_spawn_job_unlocked(jid)
+            if err:
+                return {'started':False,'reason':err,**scheduler_snapshot()}
+            save_current(entry)
+            return {'started':True,'current':entry,'reason':'worker started',**scheduler_snapshot()}
         save_queue(q)
         return {'started':False,'reason':'queue empty','current':None,**scheduler_snapshot()}
 def list_jobs():
@@ -1598,6 +1683,8 @@ class Handler(BaseHTTPRequestHandler):
                 return jresp(self, stop_all_jobs())
             if path == "/api/cancel_queued_jobs":
                 return jresp(self, cancel_queued_jobs(data))
+            if path == "/api/start_queued_jobs_parallel":
+                return jresp(self, start_queued_jobs_parallel(data))
             if path == "/api/clear_completed_jobs":
                 return jresp(self, clear_completed_jobs())
             if path == "/api/shutdown":

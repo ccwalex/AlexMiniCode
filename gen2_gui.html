@@ -154,6 +154,7 @@ Do not allow shell redirection for file writes.</textarea>
 <button class="secondary" onclick="restartCurrentJob()">Restart Current</button>
 <button class="secondary" onclick="restartSelectedJob()">Restart Selected</button>
 <button class="secondary" onclick="stopSelectedJob()">Stop Selected</button>
+<button class="secondary" onclick="startSelectedQueuedParallel()">Start Selected Parallel</button>
 <button class="secondary" onclick="cancelSelectedQueued()">Cancel Selected</button>
 <button class="secondary" onclick="stopAllJobs()">Stop All</button>
 <button class="secondary" onclick="clearCompletedJobs()">Clear Completed</button>
@@ -1019,6 +1020,18 @@ async function stopSelectedJob(){
   }catch(e){systemStatus.textContent='Stop selected failed:\n'+e.stack}
 }
 async function stopAllJobs(){if(!confirm('Stop the current job, every background job, and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);selectedQueuedJobs.clear();await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
+async function startSelectedQueuedParallel(){
+  const ids=[...selectedQueuedJobs];
+  if(!ids.length){alert('Select one or more queued jobs to start in parallel.');return}
+  const n=Math.max(1, runningCount||0);
+  if(!confirm(`Start ${ids.length} queued job(s) in parallel with the current job?\n\nAll running jobs write the same project files. Currently running: ${n}.`))return;
+  try{
+    const d=await api('/api/start_queued_jobs_parallel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_ids:ids})});
+    systemStatus.textContent=JSON.stringify(d,null,2);
+    selectedQueuedJobs.clear();
+    await refreshEverything();
+  }catch(e){systemStatus.textContent='Start selected parallel failed:\n'+e.stack}
+}
 async function cancelSelectedQueued(){
   const ids=[...selectedQueuedJobs];
   if(!ids.length){alert('Select one or more queued jobs to cancel.');return}
@@ -1111,7 +1124,7 @@ async function loadJobs(){
     const id=String(j.job_id||'');
     const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId && !isBackgroundJob(id);
     const checked=selectedQueuedJobs.has(id)?'checked':'';
-    const cb=isQueued?`<input type="checkbox" ${checked} onclick="event.stopPropagation();toggleQueuedJob('${esc(id)}',this.checked)" title="Select to cancel"> `:'';
+    const cb=isQueued?`<input type="checkbox" ${checked} onclick="event.stopPropagation();toggleQueuedJob('${esc(id)}',this.checked)" title="Select to start in parallel or cancel"> `:'';
     const bg=isBackgroundJob(id)?' <span class="status-running">[background]</span>':'';
     const fg=(id===currentJobId && j.status==='running')?' <span class="status-running">[current]</span>':'';
     return `<div class="job ${id===selectedJob?'selected':''}" onclick="selectJob('${esc(id)}')">${cb}<b>${esc(id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span>${fg}${bg}<div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`;

@@ -443,6 +443,24 @@ Request body:
 
 Jobs that are not in the queue or are currently running are returned in `skipped`.
 
+### `POST /api/start_queued_jobs_parallel`
+
+Start specific queued jobs immediately without replacing the foreground job. If a current job is running, selected jobs join the background list. If the foreground slot is empty, the first selected job becomes current and any further selected jobs run in the background.
+
+```bash
+curl -s -X POST http://127.0.0.1:7860/api/start_queued_jobs_parallel \
+  -H 'Content-Type: application/json' \
+  -d '{"job_ids": ["job_20260101_120000_abc12345"]}'
+```
+
+Request body:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `job_ids` | string[] | yes | Queued job IDs to start in parallel |
+
+Jobs that are not in the queue, already running, or blocked by the parallel failsafe are returned in `skipped`.
+
 ### `POST /api/clear_completed_jobs`
 
 Delete all terminal jobs (`completed`, `failed`, `cancelled`) that are not running and not queued. Removes each job directory, including logs and metadata.
@@ -725,6 +743,7 @@ Notes:
 | POST | `/api/stop_job` | Stop one running job by id |
 | POST | `/api/stop_all_jobs` | Stop all live jobs and clear queue |
 | POST | `/api/cancel_queued_jobs` | Cancel selected queued jobs |
+| POST | `/api/start_queued_jobs_parallel` | Start selected queued jobs in parallel |
 | POST | `/api/clear_completed_jobs` | Delete completed/failed/cancelled jobs |
 | POST | `/api/shutdown` | Stop all jobs and shut down server |
 | POST | `/api/restart_current_job` | Restart current job |

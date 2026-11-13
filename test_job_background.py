@@ -217,6 +217,59 @@ class JobBackgroundTests(unittest.TestCase):
         self.assertIn(result["new_job_id"], gui.load_queue())
         self.assertEqual(self.term_calls, [222])
 
+    def _popen_side_effect(self, pids):
+        it = iter(pids)
+
+        def popen(*args, **kwargs):
+            proc = _Proc(next(it))
+            self.alive_pids.add(proc.pid)
+            return proc
+
+        return popen
+
+    def test_start_selected_queued_parallel_keeps_current(self):
+        self._set_current("job_fg", 100)
+        queued = gui.create_job({"task": "q", "original_prompt": "q"})
+        leftover = gui.create_job({"task": "q2", "original_prompt": "q2"})
+        with patch.object(gui.subprocess, "Popen", side_effect=self._popen_side_effect([501])):
+            result = gui.start_queued_jobs_parallel({"job_ids": [queued]})
+        self.assertEqual(result["started_count"], 1)
+        self.assertEqual(result["started"][0]["slot"], "background")
+        self.assertEqual(gui.load_current().get("job_id"), "job_fg")
+        self.assertEqual([e["job_id"] for e in gui.load_background()], [queued])
+        self.assertEqual(gui.load_queue(), [leftover])
+        st = gui.read_json(gui.job_dir(queued) / "status.json")
+        self.assertEqual(st["status"], "running")
+
+    def test_start_selected_parallel_fills_empty_current(self):
+        first = gui.create_job({"task": "a", "original_prompt": "a"})
+        second = gui.create_job({"task": "b", "original_prompt": "b"})
+        with patch.object(gui.subprocess, "Popen", side_effect=self._popen_side_effect([601, 602])):
+            result = gui.start_queued_jobs_parallel({"job_ids": [first, second]})
+        self.assertEqual(result["started_count"], 2)
+        self.assertEqual(gui.load_current().get("job_id"), first)
+        self.assertEqual([e["job_id"] for e in gui.load_background()], [second])
+        self.assertEqual(gui.load_queue(), [])
+        slots = {row["job_id"]: row["slot"] for row in result["started"]}
+        self.assertEqual(slots[first], "current")
+        self.assertEqual(slots[second], "background")
+
+    def test_start_selected_parallel_skips_not_queued(self):
+        self._set_current("job_fg", 100)
+        result = gui.start_queued_jobs_parallel({"job_ids": ["job_missing"]})
+        self.assertEqual(result["started_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "not in queue")
+        self.assertEqual(gui.load_current().get("job_id"), "job_fg")
+
+    def test_start_selected_parallel_respects_cap(self):
+        self._set_current("job_fg", 100)
+        queued = gui.create_job({"task": "q", "original_prompt": "q"})
+        with patch.object(gui, "MAX_PARALLEL_JOBS", 1):
+            result = gui.start_queued_jobs_parallel({"job_ids": [queued]})
+        self.assertEqual(result["started_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "parallel job limit")
+        self.assertEqual(gui.load_queue(), [queued])
+
     def test_cancel_queued_skips_background_ids(self):
         self._seed_job("job_bg")
         self.alive_pids.add(222)
