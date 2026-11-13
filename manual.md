@@ -705,7 +705,7 @@ submit/subagent_run
 Notes:
 
 - One job occupies the foreground slot (`agent_memory/jobs/current.json`). Use **Background Current** to demote it onto `agent_memory/jobs/background.json` without stopping it; another queued or submitted job can then become foreground. Multiple background jobs may run in parallel with the foreground job. They all share the project workspace (no file leases). A high failsafe (`MAX_PARALLEL_JOBS`, default 16) blocks launching more workers. Git add/commit from the GUI is refused while more than one job is running.
-- Other jobs wait in `agent_memory/jobs/queue.json` until the foreground slot is free.
+- Other jobs wait in `agent_memory/jobs/queue.json` until the foreground slot is free, unless you start them with **Start Selected Parallel**.
 - Job artifacts live under `agent_memory/jobs/{job_id}/`:
   - `config.json`
   - `status.json`
