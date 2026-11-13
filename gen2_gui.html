@@ -116,6 +116,7 @@ Do not allow deleting files unless explicitly requested.
 Do not allow shell redirection for file writes.</textarea>
 <button id="submitJobBtn" onclick="submitJob()">Submit</button>
 <button id="stopAgentBtn" class="danger" onclick="stopCurrentJob()" disabled>Stop Agent</button>
+<button id="backgroundAgentBtn" class="secondary" onclick="backgroundCurrentJob()" disabled>Background Agent</button>
 <button class="secondary" onclick="refreshContext()">Refresh</button>
 <h2>Git</h2>
 <button class="secondary" onclick="gitAction('status')">Status</button>
@@ -149,8 +150,11 @@ Do not allow shell redirection for file writes.</textarea>
 <div class="panel">
 <h2>Jobs</h2>
 <button class="secondary" onclick="stopCurrentJob()">Stop Current</button>
+<button id="backgroundCurrentBtn" class="secondary" onclick="backgroundCurrentJob()" disabled>Background Current</button>
 <button class="secondary" onclick="restartCurrentJob()">Restart Current</button>
 <button class="secondary" onclick="restartSelectedJob()">Restart Selected</button>
+<button class="secondary" onclick="stopSelectedJob()">Stop Selected</button>
+<button class="secondary" onclick="startSelectedQueuedParallel()">Start Selected Parallel</button>
 <button class="secondary" onclick="cancelSelectedQueued()">Cancel Selected</button>
 <button class="secondary" onclick="stopAllJobs()">Stop All</button>
 <button class="secondary" onclick="clearCompletedJobs()">Clear Completed</button>
@@ -306,7 +310,7 @@ Do not allow shell redirection for file writes.</textarea>
 
 <script>
 let selectedJob=null, selectedFiles=new Set(), selectedGroups=new Set(), selectedQueuedJobs=new Set();
-let jobQueue=[], currentJobId=null, pollTimer=null, refreshInFlight=false;
+let jobQueue=[], currentJobId=null, backgroundJobIds=[], runningCount=0, pollTimer=null, refreshInFlight=false;
 let jobsListCache=[], jobsDomSignature='', progressDomSignature='';
 const POLL_INTERVAL_MS=4000;
 const LOG_DISPLAY_MAX=200000;
@@ -945,17 +949,36 @@ function counts(){fileCount.textContent=selectedFiles.size;regCount.textContent=
 async function initAgent(){systemStatus.textContent=JSON.stringify(await api('/api/init',{method:'POST'}),null,2);await refreshEverything()}
 async function refreshAllRegistries(){systemStatus.textContent=JSON.stringify(await api('/api/refresh_all_registries',{method:'POST'}),null,2);await loadRegistryContexts()}
 async function updateRegistry(){systemStatus.textContent=JSON.stringify(await api('/api/update_registry',{method:'POST'}),null,2);await loadRegistryContexts()}
+function shortJobId(id){
+  const s=String(id||'');
+  return s.length>22?s.slice(0,22)+'…':s;
+}
+function isBackgroundJob(id){
+  return backgroundJobIds.includes(String(id||''));
+}
+function setBackgroundButtonsEnabled(on, current){
+  const label=on?`Background Current (${shortJobId(current.job_id)})`:'Background Current';
+  ['backgroundAgentBtn','backgroundCurrentBtn'].forEach(bid=>{
+    const b=document.getElementById(bid);
+    if(!b)return;
+    b.disabled=!on;
+    b.textContent=bid==='backgroundAgentBtn'?(on?`Background Agent (${shortJobId(current.job_id)})`:'Background Agent'):label;
+  });
+}
 function updateAgentRunningState(current){
   const btn=document.getElementById('stopAgentBtn');
-  if(!btn)return;
   if(current&&current.job_id){
-    btn.disabled=false;
-    const id=String(current.job_id);
-    const shortId=id.length>22?id.slice(0,22)+'…':id;
-    btn.textContent=`Stop Agent (${shortId})`;
+    if(btn){
+      btn.disabled=false;
+      btn.textContent=`Stop Agent (${shortJobId(current.job_id)})`;
+    }
+    setBackgroundButtonsEnabled(true, current);
   }else{
-    btn.disabled=true;
-    btn.textContent='Stop Agent';
+    if(btn){
+      btn.disabled=true;
+      btn.textContent='Stop Agent';
+    }
+    setBackgroundButtonsEnabled(false, current||{});
   }
 }
 async function stopCurrentJob(){
@@ -972,9 +995,43 @@ async function stopCurrentJob(){
     if(btn)btn.textContent=prev;
   }
 }
+async function backgroundCurrentJob(){
+  if(!currentJobId){alert('No current job to send to the background.');return}
+  const n=Math.max(1, runningCount||0);
+  if(!confirm(`Send the current job to the background so another job can run in parallel?\n\nAll running jobs write the same project files. Currently running: ${n}.`))return;
+  try{
+    const d=await api('/api/background_current_job',{method:'POST'});
+    systemStatus.textContent=JSON.stringify(d,null,2);
+    await refreshEverything();
+  }catch(e){systemStatus.textContent='Background current failed:\n'+e.stack}
+}
 async function restartCurrentJob(){if(!confirm('Stop and restart the current running job?'))return;try{const d=await api('/api/restart_current_job',{method:'POST'});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart current failed:\n'+e.stack}}
 async function restartSelectedJob(){if(!selectedJob){alert('Select a job first.');return}if(!confirm('Restart selected job as a new job?'))return;try{const d=await api('/api/restart_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:selectedJob})});systemStatus.textContent=JSON.stringify(d,null,2);if(d.new_job_id)selectedJob=d.new_job_id;await refreshEverything()}catch(e){systemStatus.textContent='Restart selected failed:\n'+e.stack}}
-async function stopAllJobs(){if(!confirm('Stop current job and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);selectedQueuedJobs.clear();await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
+async function stopSelectedJob(){
+  if(!selectedJob){alert('Select a job first.');return}
+  const id=String(selectedJob);
+  const isLive=id===String(currentJobId||'')||isBackgroundJob(id);
+  if(!isLive){alert('Selected job is not running. Use Cancel Selected for queued jobs.');return}
+  if(!confirm('Stop the selected running job? Other running jobs keep going.'))return;
+  try{
+    const d=await api('/api/stop_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:id})});
+    systemStatus.textContent=JSON.stringify(d,null,2);
+    await refreshEverything();
+  }catch(e){systemStatus.textContent='Stop selected failed:\n'+e.stack}
+}
+async function stopAllJobs(){if(!confirm('Stop the current job, every background job, and clear all queued jobs?'))return;try{systemStatus.textContent=JSON.stringify(await api('/api/stop_all_jobs',{method:'POST'}),null,2);selectedQueuedJobs.clear();await refreshEverything()}catch(e){systemStatus.textContent='Stop all failed:\n'+e.stack}}
+async function startSelectedQueuedParallel(){
+  const ids=[...selectedQueuedJobs];
+  if(!ids.length){alert('Select one or more queued jobs to start in parallel.');return}
+  const n=Math.max(1, runningCount||0);
+  if(!confirm(`Start ${ids.length} queued job(s) in parallel with the current job?\n\nAll running jobs write the same project files. Currently running: ${n}.`))return;
+  try{
+    const d=await api('/api/start_queued_jobs_parallel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_ids:ids})});
+    systemStatus.textContent=JSON.stringify(d,null,2);
+    selectedQueuedJobs.clear();
+    await refreshEverything();
+  }catch(e){systemStatus.textContent='Start selected parallel failed:\n'+e.stack}
+}
 async function cancelSelectedQueued(){
   const ids=[...selectedQueuedJobs];
   if(!ids.length){alert('Select one or more queued jobs to cancel.');return}
@@ -1022,6 +1079,8 @@ async function refreshEverything(){
       tick=await api('/api/tick',{method:'POST'});
       jobQueue=Array.isArray(tick.queue)?tick.queue:[];
       currentJobId=tick.current?.job_id||null;
+      backgroundJobIds=Array.isArray(tick.background)?tick.background.map(e=>String(e.job_id||'')).filter(Boolean):[];
+      runningCount=Number(tick.running_count||0)||((currentJobId?1:0)+backgroundJobIds.length);
     }catch(e){}
     updateAgentRunningState(tick?.current);
     await loadJobs();
@@ -1047,25 +1106,28 @@ function findJobInCache(id){
 function jobsListSignature(arr, queuedSet){
   return arr.map(j=>{
     const id=String(j.job_id||'');
-    const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId;
+    const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId && !isBackgroundJob(id);
     const checked=selectedQueuedJobs.has(id);
-    return `${id}:${j.status||''}:${j.updated_at||''}:${id===selectedJob}:${isQueued}:${checked}`;
+    const bg=isBackgroundJob(id);
+    return `${id}:${j.status||''}:${j.updated_at||''}:${id===selectedJob}:${isQueued}:${checked}:${bg}`;
   }).join('|');
 }
 async function loadJobs(){
   const arr=await api('/api/jobs');
   jobsListCache=Array.isArray(arr)?arr:[];
   const queuedSet=new Set(jobQueue);
-  selectedQueuedJobs=new Set([...selectedQueuedJobs].filter(id=>queuedSet.has(id)&&id!==currentJobId));
+  selectedQueuedJobs=new Set([...selectedQueuedJobs].filter(id=>queuedSet.has(id)&&id!==currentJobId&&!isBackgroundJob(id)));
   const sig=jobsListSignature(jobsListCache, queuedSet);
   if(sig===jobsDomSignature) return jobsListCache;
   jobsDomSignature=sig;
   jobs.innerHTML=jobsListCache.map(j=>{
     const id=String(j.job_id||'');
-    const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId;
+    const isQueued=j.status==='queued' && queuedSet.has(id) && id!==currentJobId && !isBackgroundJob(id);
     const checked=selectedQueuedJobs.has(id)?'checked':'';
-    const cb=isQueued?`<input type="checkbox" ${checked} onclick="event.stopPropagation();toggleQueuedJob('${esc(id)}',this.checked)" title="Select to cancel"> `:'';
-    return `<div class="job ${id===selectedJob?'selected':''}" onclick="selectJob('${esc(id)}')">${cb}<b>${esc(id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span><div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`;
+    const cb=isQueued?`<input type="checkbox" ${checked} onclick="event.stopPropagation();toggleQueuedJob('${esc(id)}',this.checked)" title="Select to start in parallel or cancel"> `:'';
+    const bg=isBackgroundJob(id)?' <span class="status-running">[background]</span>':'';
+    const fg=(id===currentJobId && j.status==='running')?' <span class="status-running">[current]</span>':'';
+    return `<div class="job ${id===selectedJob?'selected':''}" onclick="selectJob('${esc(id)}')">${cb}<b>${esc(id)}</b> <span class="status-${esc(j.status||'unknown')}">[${esc(j.status||'unknown')}]</span>${fg}${bg}<div class="muted">${esc(j.task_preview||'')}</div><div class="muted">${esc(j.updated_at||'')}</div></div>`;
   }).join('')||'<div class="job">No jobs.</div>';
   return jobsListCache;
 }
@@ -1384,8 +1446,21 @@ async function loadTree(){
   }
   counts();
 }
-async function gitAction(action){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}),null,2)}
-async function gitCommit(){gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'commit',message:commitMsg.value})}),null,2)}
+function gitWriteBlocked(){
+  if(runningCount>1){
+    alert(`Refusing git write while ${runningCount} jobs are running. Stop extra jobs first so a commit does not race agents.`);
+    return true;
+  }
+  return false;
+}
+async function gitAction(action){
+  if((action==='add_all'||action==='commit') && gitWriteBlocked()) return;
+  gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}),null,2);
+}
+async function gitCommit(){
+  if(gitWriteBlocked()) return;
+  gitOutput.textContent=JSON.stringify(await api('/api/git',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'commit',message:commitMsg.value})}),null,2);
+}
 
 function renderChat(messages, pending=false){
   const parts=(messages||[]).map(m=>{
