@@ -572,7 +572,7 @@ curl -s -X POST http://127.0.0.1:7860/api/refresh_all_registries
 
 ### `POST /api/update_registry`
 
-Generate missing tracked-folder module metadata and rebuild the global registry. Existing sidecar files are left unchanged.
+Generate missing tracked-folder module metadata and rebuild the global registry. Existing sidecar files for live modules are left unchanged. Sidecars whose source files no longer exist are deleted before the rebuild.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7860/api/update_registry

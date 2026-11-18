@@ -19,7 +19,8 @@ def update_registry():
     Update metadata registry by generating missing metadata files and rebuilding
     global metadata JSON.
 
-    Existing sidecars are left unchanged. Only files without metadata are generated.
+    Existing sidecars for live files are left unchanged. Only files without
+    metadata are generated. Sidecars whose source files are gone are deleted.
     """
     return run_registry_metadata_pass(overwrite=False, summary_verb="updated")
 
