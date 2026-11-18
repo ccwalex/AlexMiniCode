@@ -122,6 +122,38 @@ class RegistryPassTests(unittest.TestCase):
         self.assertEqual(self._sidecar()["name"], "old_example")
         self.assertIn("updated", msg)
 
+    def test_update_removes_sidecar_for_deleted_module(self):
+        gone_sidecar = os.path.join(self.meta, "nested", "gone.py.txt")
+        os.makedirs(os.path.dirname(gone_sidecar), exist_ok=True)
+        with open(gone_sidecar, "w", encoding="utf-8") as f:
+            json.dump(
+                {"name": "gone", "type": "function", "path": "code/nested/gone.py"},
+                f,
+            )
+
+        ok, msg = run_registry_metadata_pass(overwrite=False, summary_verb="updated")
+
+        self.assertTrue(ok)
+        self.assertEqual(self.meta_calls, [])
+        self.assertFalse(os.path.exists(gone_sidecar))
+        self.assertFalse(os.path.isdir(os.path.dirname(gone_sidecar)))
+        self.assertEqual(self._sidecar()["name"], "old_example")
+        self.assertIn("removed=1", msg)
+
+        with open(
+            os.path.join(self.root, "agent_memory", "core", "metadata.json"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            registry = json.load(f)
+
+        paths = [entry.get("path") for entry in registry.values()]
+        self.assertIn("code/example.py", paths)
+        self.assertNotIn("code/nested/gone.py", paths)
+        self.assertTrue(
+            all("gone.py" not in key for key in registry.keys())
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

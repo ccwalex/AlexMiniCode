@@ -116,11 +116,128 @@ def _write_metadata_fallback(metadata, expected_meta_full, rel_file_path):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _normalize_rel(path):
+    return os.path.normpath(str(path or "")).replace("\\", "/")
+
+
+def _source_full_for_sidecar(abs_folder_path, abs_meta_dir, meta_file_path, meta_data=None):
+    """
+    Map a sidecar file back to its source module path.
+
+    Sidecar agent_memory/meta/code/a/b.py.txt -> source code/a/b.py
+    """
+    if isinstance(meta_data, dict) and meta_data.get("path"):
+        source_rel = _normalize_rel(meta_data.get("path"))
+        try:
+            return safe_path(source_rel)
+        except Exception:
+            return os.path.normpath(os.path.join(CFG.PROJECT_ROOT, source_rel))
+
+    if not abs_folder_path:
+        return None
+
+    rel_in_meta = _normalize_rel(os.path.relpath(meta_file_path, abs_meta_dir))
+    if rel_in_meta.startswith(".."):
+        return None
+    if not rel_in_meta.endswith(".txt"):
+        return None
+
+    rel_in_folder = rel_in_meta[:-4]
+    return os.path.normpath(os.path.join(abs_folder_path, rel_in_folder.replace("/", os.sep)))
+
+
+def _sidecar_source_exists(abs_folder_path, abs_meta_dir, meta_file_path, meta_data=None):
+    candidates = []
+
+    inferred = _source_full_for_sidecar(
+        abs_folder_path,
+        abs_meta_dir,
+        meta_file_path,
+        meta_data=None,
+    )
+    if inferred:
+        candidates.append(inferred)
+
+    from_json = _source_full_for_sidecar(
+        abs_folder_path,
+        abs_meta_dir,
+        meta_file_path,
+        meta_data,
+    )
+    if from_json and from_json not in candidates:
+        candidates.append(from_json)
+
+    if not candidates:
+        return True
+
+    return any(os.path.exists(path) for path in candidates)
+
+
+def _remove_empty_sidecar_parents(meta_file_path, abs_meta_dir):
+    parent = os.path.dirname(meta_file_path)
+    abs_meta_dir = os.path.abspath(abs_meta_dir)
+
+    while parent and os.path.abspath(parent) != abs_meta_dir:
+        try:
+            common = os.path.commonpath(
+                [os.path.abspath(parent), abs_meta_dir]
+            )
+        except Exception:
+            break
+        if common != abs_meta_dir:
+            break
+        try:
+            os.rmdir(parent)
+        except OSError:
+            break
+        parent = os.path.dirname(parent)
+
+
+def _prune_stale_sidecars(abs_folder_path, abs_meta_dir):
+    """
+    Delete metadata sidecars whose corresponding source files no longer exist.
+    """
+    removed = 0
+    errors = []
+
+    if not abs_folder_path or not os.path.isdir(abs_meta_dir):
+        return removed, errors
+
+    for root, dirs, files in os.walk(abs_meta_dir):
+        dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
+
+        for filename in files:
+            if not filename.endswith(".txt"):
+                continue
+
+            meta_file_path = os.path.join(root, filename)
+            source_full = _source_full_for_sidecar(
+                abs_folder_path,
+                abs_meta_dir,
+                meta_file_path,
+            )
+
+            if source_full is None or os.path.exists(source_full):
+                continue
+
+            try:
+                os.remove(meta_file_path)
+                removed += 1
+                _remove_empty_sidecar_parents(meta_file_path, abs_meta_dir)
+            except Exception as e:
+                errors.append(
+                    f"Could not remove stale sidecar {meta_file_path}: {e}"
+                )
+
+    return removed, errors
+
+
 def _rebuild_global_metadata(tracked_folders):
     global_metadata = {}
 
     for folder in tracked_folders:
         meta_dir = folder.get("metadata_path") or folder.get("meta_path")
+        folder_path = folder.get("folder_path") or folder.get("folder") or folder.get("path")
 
         if not meta_dir:
             continue
@@ -133,7 +250,14 @@ def _rebuild_global_metadata(tracked_folders):
         if not os.path.exists(abs_meta_dir):
             continue
 
-        for root, _, files in os.walk(abs_meta_dir):
+        try:
+            abs_folder_path = safe_path(folder_path) if folder_path else None
+        except Exception:
+            abs_folder_path = None
+
+        for root, dirs, files in os.walk(abs_meta_dir):
+            dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
+
             for filename in files:
                 if not filename.endswith(".txt"):
                     continue
@@ -143,6 +267,14 @@ def _rebuild_global_metadata(tracked_folders):
                 try:
                     with open(meta_file_path, "r", encoding="utf-8") as f:
                         meta_data = json.load(f)
+
+                    if not _sidecar_source_exists(
+                        abs_folder_path,
+                        abs_meta_dir,
+                        meta_file_path,
+                        meta_data,
+                    ):
+                        continue
 
                     rel_meta_path = os.path.relpath(meta_file_path, CFG.PROJECT_ROOT)
                     rel_meta_path = rel_meta_path.replace("\\", "/")
@@ -170,7 +302,8 @@ def _rebuild_global_metadata(tracked_folders):
 
 def run_registry_metadata_pass(overwrite=False, summary_verb="refreshed"):
     """
-    Scan tracked folders, generate module metadata sidecars, rebuild metadata.json.
+    Scan tracked folders, generate module metadata sidecars, prune sidecars
+    whose source files are gone, then rebuild metadata.json.
 
     overwrite=False: generate metadata only when a sidecar is missing.
     overwrite=True: regenerate metadata for every scanned file. On generate/write
@@ -185,6 +318,7 @@ def run_registry_metadata_pass(overwrite=False, summary_verb="refreshed"):
     failed = 0
     scanned = 0
     skipped = 0
+    removed = 0
     errors = []
 
     for folder in tracked_folders:
@@ -203,96 +337,102 @@ def run_registry_metadata_pass(overwrite=False, summary_verb="refreshed"):
             errors.append(f"Invalid folder path {folder_path}: {e}")
             continue
 
-        if not os.path.exists(abs_folder_path):
-            failed += 1
-            errors.append(f"Tracked folder does not exist: {folder_path}")
-            continue
-
         try:
-            safe_path(metadata_path)
+            abs_meta_dir = safe_path(metadata_path)
         except Exception as e:
             failed += 1
             errors.append(f"Invalid metadata path {metadata_path}: {e}")
             continue
 
-        for root, dirs, files in os.walk(abs_folder_path):
-            dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
+        if os.path.exists(abs_folder_path):
+            for root, dirs, files in os.walk(abs_folder_path):
+                dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
 
-            for filename in files:
-                abs_file_path = os.path.join(root, filename)
+                for filename in files:
+                    abs_file_path = os.path.join(root, filename)
 
-                if not _should_scan_file(abs_file_path, code_type):
-                    skipped += 1
-                    continue
-
-                scanned += 1
-
-                try:
-                    rel_file_path = os.path.relpath(abs_file_path, CFG.PROJECT_ROOT)
-                    rel_file_path = rel_file_path.replace("\\", "/")
-
-                    rel_path_in_folder = os.path.relpath(abs_file_path, abs_folder_path)
-                    rel_path_in_folder = rel_path_in_folder.replace("\\", "/")
-
-                    exists, expected_meta_full = _metadata_exists(
-                        metadata_path,
-                        rel_path_in_folder
-                    )
-
-                    if exists and not overwrite:
-                        existing += 1
+                    if not _should_scan_file(abs_file_path, code_type):
+                        skipped += 1
                         continue
 
-                    success, content = read_file(rel_file_path)
+                    scanned += 1
 
-                    if not success:
-                        failed += 1
-                        errors.append(f"Could not read {rel_file_path}: {content}")
-                        continue
-
-                    metadata = meta_caller(path=rel_file_path, content=content)
-
-                    if not isinstance(metadata, dict) or metadata.get("error") or not metadata.get("name"):
-                        failed += 1
-                        reason = (
-                            metadata.get("error")
-                            if isinstance(metadata, dict)
-                            else f"meta_caller returned {type(metadata).__name__}"
-                        )
-                        errors.append(f"Could not generate metadata for {rel_file_path}: {reason}")
-                        continue
-
-                    writer_ok = True
                     try:
-                        meta_writer(metadata, rel_file_path)
-                    except Exception as e:
-                        writer_ok = False
-                        errors.append(f"meta_writer failed for {rel_file_path}: {e}")
-                        if exists:
-                            failed += 1
+                        rel_file_path = os.path.relpath(abs_file_path, CFG.PROJECT_ROOT)
+                        rel_file_path = rel_file_path.replace("\\", "/")
+
+                        rel_path_in_folder = os.path.relpath(abs_file_path, abs_folder_path)
+                        rel_path_in_folder = rel_path_in_folder.replace("\\", "/")
+
+                        exists, expected_meta_full = _metadata_exists(
+                            metadata_path,
+                            rel_path_in_folder
+                        )
+
+                        if exists and not overwrite:
+                            existing += 1
                             continue
 
-                    if not os.path.exists(expected_meta_full):
-                        _write_metadata_fallback(
-                            metadata=metadata,
-                            expected_meta_full=expected_meta_full,
-                            rel_file_path=rel_file_path,
-                        )
-                    elif overwrite and writer_ok:
-                        _write_metadata_fallback(
-                            metadata=metadata,
-                            expected_meta_full=expected_meta_full,
-                            rel_file_path=rel_file_path,
-                        )
+                        success, content = read_file(rel_file_path)
 
-                    generated += 1
+                        if not success:
+                            failed += 1
+                            errors.append(f"Could not read {rel_file_path}: {content}")
+                            continue
 
-                except Exception as e:
-                    failed += 1
-                    errors.append(
-                        f"Metadata refresh failed for {abs_file_path}: {e}\n"
-                        f"{traceback.format_exc()}"
-                    )
+                        metadata = meta_caller(path=rel_file_path, content=content)
+
+                        if not isinstance(metadata, dict) or metadata.get("error") or not metadata.get("name"):
+                            failed += 1
+                            reason = (
+                                metadata.get("error")
+                                if isinstance(metadata, dict)
+                                else f"meta_caller returned {type(metadata).__name__}"
+                            )
+                            errors.append(f"Could not generate metadata for {rel_file_path}: {reason}")
+                            continue
+
+                        writer_ok = True
+                        try:
+                            meta_writer(metadata, rel_file_path)
+                        except Exception as e:
+                            writer_ok = False
+                            errors.append(f"meta_writer failed for {rel_file_path}: {e}")
+                            if exists:
+                                failed += 1
+                                continue
+
+                        if not os.path.exists(expected_meta_full):
+                            _write_metadata_fallback(
+                                metadata=metadata,
+                                expected_meta_full=expected_meta_full,
+                                rel_file_path=rel_file_path,
+                            )
+                        elif overwrite and writer_ok:
+                            _write_metadata_fallback(
+                                metadata=metadata,
+                                expected_meta_full=expected_meta_full,
+                                rel_file_path=rel_file_path,
+                            )
+
+                        generated += 1
+
+                    except Exception as e:
+                        failed += 1
+                        errors.append(
+                            f"Metadata refresh failed for {abs_file_path}: {e}\n"
+                            f"{traceback.format_exc()}"
+                        )
+        else:
+            failed += 1
+            errors.append(f"Tracked folder does not exist: {folder_path}")
+
+        if os.path.isdir(abs_meta_dir):
+            pruned, prune_errors = _prune_stale_sidecars(abs_folder_path, abs_meta_dir)
+            removed += pruned
+            if prune_errors:
+                failed += len(prune_errors)
+                errors.extend(prune_errors)
 
     try:
         _rebuild_global_metadata(tracked_folders)
@@ -308,6 +448,7 @@ def run_registry_metadata_pass(overwrite=False, summary_verb="refreshed"):
         f"scanned={scanned}, "
         f"existing={existing}, "
         f"generated={generated}, "
+        f"removed={removed}, "
         f"skipped={skipped}, "
         f"failed={failed}"
     )
@@ -327,6 +468,7 @@ def refresh_registry():
     - `TrackFolders` is the source of tracked folder configuration.
     - Existing sidecars are overwritten with newly generated metadata.
     - On generate/write failure, existing sidecar files are left in place.
+    - Sidecars whose source files no longer exist are deleted before rebuild.
     - Files are scanned because they are inside a tracked folder; do not call
       `is_tracked()` on absolute file directories, since that silently skips files.
     """
