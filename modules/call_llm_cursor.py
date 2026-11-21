@@ -15,7 +15,6 @@ from cursor_model_selection import (
     parse_model_selection,
 )
 from model_config import normalize_effort
-from safe_path import safe_path
 
 MODULE_METADATA = {
     "name": "call_llm_cursor",
@@ -37,6 +36,51 @@ MODULE_METADATA = {
 }
 
 _AGENT_HANDLES: dict[str, Any] = {}
+_CURSOR_CLIENT: Any = None
+_CURSOR_CLIENT_WORKSPACE: str | None = None
+
+
+def _planning_cwd() -> str:
+    root = str(getattr(CFG, "PROJECT_ROOT", "") or "").strip()
+    if root:
+        return os.path.abspath(root)
+    return os.path.abspath(".")
+
+
+def _get_cursor_client():
+    """Reuse a workspace-scoped local bridge so Agent.resume finds the same agent."""
+    global _CURSOR_CLIENT, _CURSOR_CLIENT_WORKSPACE
+
+    workspace = _planning_cwd()
+    if _CURSOR_CLIENT is not None and _CURSOR_CLIENT_WORKSPACE == workspace:
+        return _CURSOR_CLIENT
+
+    try:
+        from cursor_sdk import CursorClient
+    except ImportError:
+        return None
+
+    launcher = getattr(CursorClient, "launch_bridge", None)
+    if not callable(launcher):
+        return None
+
+    try:
+        launched = launcher(workspace=workspace)
+    except TypeError:
+        launched = launcher()
+    except Exception as exc:
+        print(f"[Cursor] launch_bridge failed: {exc}; using default client")
+        return None
+
+    client = launched.__enter__() if hasattr(launched, "__enter__") else launched
+    _CURSOR_CLIENT = client
+    _CURSOR_CLIENT_WORKSPACE = workspace
+    return client
+
+
+def forget_cached_agent_handle(agent_id) -> None:
+    """Drop the in-process handle without closing so the next call can Agent.resume."""
+    _AGENT_HANDLES.pop(str(agent_id or "").strip(), None)
 
 
 def _messages_to_prompt(messages) -> str:
@@ -146,11 +190,11 @@ def _cursor_api_key() -> str:
     return api_key
 
 
-def _build_agent_options(model_value, api_key, cwd):
+def _build_agent_options(model_value, api_key, cwd=None):
     from cursor_sdk import AgentOptions, LocalAgentOptions
 
     local_opts = LocalAgentOptions(
-        cwd=cwd,
+        cwd=cwd or _planning_cwd(),
         setting_sources=[],
     )
 
@@ -158,17 +202,45 @@ def _build_agent_options(model_value, api_key, cwd):
         api_key=api_key,
         model=model_value,
         local=local_opts,
-        # Omitting tools exposes Cursor's full agent toolset (read/edit/shell/...).
-        # Gen2 expects plain text/JSON from our own prompts, not native tool calls.
+        # tools=[] is text-only: Gen2 parses /subagent tool calls from the reply.
         tools=[],
     )
+
+
+def _invoke_agent(factory, *args, **kwargs):
+    client = _get_cursor_client()
+    if client is not None:
+        kwargs.setdefault("client", client)
+    try:
+        return factory(*args, **kwargs)
+    except TypeError:
+        kwargs.pop("client", None)
+        return factory(*args, **kwargs)
+
+
+def _create_cursor_agent(options):
+    from cursor_sdk import Agent
+
+    return _invoke_agent(
+        Agent.create,
+        api_key=options.api_key,
+        model=options.model,
+        local=options.local,
+        tools=options.tools,
+    )
+
+
+def _resume_cursor_agent(agent_id, options):
+    from cursor_sdk import Agent
+
+    return _invoke_agent(Agent.resume, agent_id, options)
 
 
 def _run_cursor_prompt(prompt, model_value, api_key, cwd):
     from cursor_sdk import Agent
 
     options = _build_agent_options(model_value, api_key, cwd)
-    return Agent.prompt(prompt, options)
+    return _invoke_agent(Agent.prompt, prompt, options)
 
 
 def _cursor_response_dict(text: str, model_id: str, used_params, *, agent_id=None) -> dict:
@@ -257,10 +329,8 @@ def _get_or_resume_agent(agent_id: str, model_value, api_key, cwd):
     if agent is not None:
         return agent
 
-    from cursor_sdk import Agent
-
     options = _build_agent_options(model_value, api_key, cwd)
-    agent = Agent.resume(agent_id, options)
+    agent = _resume_cursor_agent(agent_id, options)
     _register_agent_handle(agent)
     return agent
 
@@ -280,7 +350,7 @@ def bootstrap_cursor_conversation(
         raise ValueError("messages must contain at least one non-empty prompt")
 
     api_key = _cursor_api_key()
-    cwd = safe_path(".")
+    cwd = _planning_cwd()
 
     def _bootstrap(model_id, params):
         resolved_id, model_value, used_params = _resolve_cursor_model(
@@ -289,15 +359,8 @@ def bootstrap_cursor_conversation(
             force_params=params,
         )
 
-        from cursor_sdk import Agent
-
         options = _build_agent_options(model_value, api_key, cwd)
-        agent = Agent.create(
-            api_key=options.api_key,
-            model=options.model,
-            local=options.local,
-            tools=options.tools,
-        )
+        agent = _create_cursor_agent(options)
         agent_id = _register_agent_handle(agent)
         text = _send_agent_message(agent, prompt)
         return _cursor_response_dict(text, resolved_id, used_params, agent_id=agent_id)
@@ -324,7 +387,7 @@ def continue_cursor_conversation(
         raise ValueError("message must be non-empty")
 
     api_key = _cursor_api_key()
-    cwd = safe_path(".")
+    cwd = _planning_cwd()
 
     def _continue(model_id, params):
         resolved_id, model_value, used_params = _resolve_cursor_model(
@@ -359,7 +422,7 @@ def call_llm_cursor(
     if not prompt:
         raise ValueError("messages must contain at least one non-empty prompt")
 
-    cwd = safe_path(".")
+    cwd = _planning_cwd()
     selection = parse_model_selection(model, cursor_params)
     model_id = selection["id"]
     effort = normalize_effort(thinking)
